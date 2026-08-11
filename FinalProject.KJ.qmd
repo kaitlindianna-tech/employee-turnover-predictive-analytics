@@ -25,7 +25,6 @@ Before developing predictive models, the dataset was prepared to ensure the data
 #| warning: false
 
 # Set seed at the beginning of the project for reproducibility.
-# Stilson requested seed 42 throughout the final project.
 set.seed(42)
 
 # This function checks whether each package is installed.
