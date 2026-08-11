@@ -1,0 +1,3446 @@
+---
+title: "Employee Turnover Prediction"
+author: "Kaitlin Jordan"
+format: pdf
+editor: visual
+---
+
+# Introduction
+
+Employee turnover presents a significant challenge for organizations due to its financial costs and its impact on productivity, team performance, and organizational knowledge. As organizations increasingly leverage People Analytics to support strategic decision-making, predictive modeling offers an opportunity to identify employees who may be at greater risk of leaving before turnover occurs. Rather than reacting to turnover after it happens, organizations can use predictive insights to implement targeted retention strategies that improve workforce stability while making more effective use of organizational resources.
+
+The purpose of this project is to develop and evaluate machine learning models capable of predicting employee turnover using a simulated human resources dataset. The analysis begins with data preparation and exploratory data analysis to better understand the characteristics of the workforce and identify patterns related to employee turnover. Four classification models will then be developed and compared using several evaluation metrics, including confusion matrices, the area under the receiver operating characteristic curve (AUC), and Youden's J-index. In addition to predictive performance, model simplicity and interpretability will be considered when selecting a final model for deployment.
+
+Although the primary focus of this project is predictive modeling, the ultimate goal is to support evidence-based talent management decisions. The selected model will therefore be evaluated from both a technical and business perspective. The final report includes documentation intended for a fellow data analyst to facilitate model reproduction and future development, as well as an executive summary that translates the technical findings into actionable recommendations for organizational leaders. Finally, the expected financial impact of implementing targeted employee retention interventions will be estimated using the assumptions provided in the project requirements.
+
+# Data Preprocessing
+
+Before developing predictive models, the dataset was prepared to ensure the data were suitable for analysis. This process included importing the data, examining its structure and quality, identifying any missing values or data issues, and converting variables to the appropriate data types. These preprocessing steps establish a clean and consistent foundation for the exploratory analyses and predictive modeling that follow.
+
+## Load Packages
+
+```{r}
+#| label: load-packages
+#| message: false
+#| warning: false
+
+# Set seed at the beginning of the project for reproducibility.
+# Stilson requested seed 42 throughout the final project.
+set.seed(42)
+
+# This function checks whether each package is installed.
+# If a package is missing, it installs it and then loads it.
+install_load_packages <- function(packages) {
+  installed <- rownames(installed.packages())
+  missing <- setdiff(packages, installed)
+  
+  if (length(missing) > 0) {
+    install.packages(missing, dependencies = TRUE)
+  }
+  
+  suppressPackageStartupMessages(
+    invisible(lapply(packages, require, character.only = TRUE))
+  )
+}
+
+# Core packages for importing, cleaning, exploring, visualizing,
+# modeling, evaluating, and interpreting the HR turnover data.
+install_load_packages(c(
+  # Data import and cleaning
+  "readxl", "readr", "dplyr","tibble", "tidyr", "forcats", "janitor", "skimr", "naniar",
+  
+  # Tables and reporting
+  "knitr", "DT", "broom", "gt", "gtsummary",
+  
+  # Visualization and interpretation
+  "ggplot2", "GGally", "corrplot", "vip",
+  
+  # Modeling and evaluation
+  "tidymodels", "rsample", "themis", "probably", "pROC", "yardstick","Boruta",
+  
+  # Specific model engines
+  "randomForest", "ranger", "e1071", "rpart", "rpart.plot",
+  
+  # Utility packages
+  "purrr", "conflicted", "doParallel", "PerformanceAnalytics"
+))
+```
+
+```{r}
+#| label: conflict-prefer
+
+# Resolve function name conflicts by explicitly selecting
+# which package's version should be used throughout the project.
+
+conflict_prefer("select",     "dplyr")
+conflict_prefer("filter",     "dplyr")
+
+conflict_prefer("tune",       "tune")
+conflict_prefer("fit",        "parsnip")
+conflict_prefer("rmse",       "yardstick")
+
+conflict_prefer("map",        "purrr")
+conflict_prefer("vi",         "vip")
+
+conflict_prefer("chisq.test", "stats")
+conflict_prefer("skewness",   "PerformanceAnalytics")
+
+# Add this because recipes also uses step() heavily.
+conflict_prefer("step",       "recipes")
+```
+
+## Import Data
+
+```{r}
+#| label: import-data
+
+# Import the employee turnover dataset.
+hr_raw <- read_excel("C:/Users/kaitl/OneDrive/Desktop/IOMP R Files/Advanced Analytics/Final Project/PSYC6841_Final_Project_Data.xlsx")
+```
+
+## Initial Inspection
+
+```{r}
+#| label: initial-inspection
+
+# Look at the column names in the raw imported dataset.
+# This satisfies the rubric item for reviewing column names.
+colnames(hr_raw)
+
+# Look at the structure of the raw imported dataset.
+# This satisfies the rubric item for reviewing data structure.
+str(hr_raw)
+
+# View dimensions of the dataset: rows and columns.
+dim(hr_raw)
+
+# Preview the first few observations.
+head(hr_raw)
+```
+
+The initial inspection confirmed that the dataset imported successfully and contained 9,999 employee records across 10 variables. The dataset was stored as a tibble and included a combination of numeric and character variables. Most variables were imported with the expected data types; however, several binary and categorical variables (e.g., `work_accident`, `left`, `promotion_last_5years`, `sales`, and `salary`) will require conversion to factors before modeling. Additionally, the inspection identified one variable name that will be standardized to snake_case during the data cleaning process.
+
+## Data Cleaning
+
+Following the initial inspection, the dataset was cleaned and prepared for analysis. A unique identifier was added to each observation to simplify tracking throughout the modeling process, variable names were standardized to snake_case for consistency, and categorical variables were converted to the appropriate factor data types. These preprocessing steps established a clean and consistent dataset for the remaining analyses.
+
+```{r}
+#| label: add-id
+
+# Add a unique ID variable so observations can be tracked later if needed.
+hr_data <- hr_raw %>%
+  mutate(id = row_number()) %>%
+  select(id, everything())
+```
+
+```{r}
+#| label: clean-names
+
+# clean_names() from {janitor} converts all column names to snake_case,
+# removes special characters, and ensures unique names.
+# This must run before any column-name references downstream.
+hr_data <- hr_data %>%
+  clean_names()
+
+cat(colnames(hr_data), sep = ",\n")
+```
+
+```{r}
+#| label: rename-variables
+
+# Rename variables to improve clarity while preserving their meaning.
+# The original variable "sales" represents the employee's department.
+hr_data <- hr_data %>%
+  rename(
+    department = sales
+  )
+
+# Display updated column names.
+cat(colnames(hr_data), sep = ",\n")
+```
+
+```{r}
+#| label: convert-variable-types
+
+# Convert categorical variables to factors.
+# The outcome variable left is coded 1 = left and 0 = stayed.
+# The salary variable is ordered because low, medium, and high have a natural rank.
+
+hr_data <- hr_data %>%
+  mutate(
+    left = factor(left, levels = c(1, 0), labels = c("left", "stayed")),
+    work_accident = factor(work_accident, levels = c(0, 1), labels = c("no", "yes")),
+    promotion_last_5years = factor(promotion_last_5years, levels = c(0, 1), labels = c("no", "yes")),
+    department = factor(department),
+    salary = factor(salary, levels = c("low", "medium", "high"), ordered = TRUE)
+  )
+
+# Check updated variable types.
+str(hr_data)
+```
+
+## Data Quality Assessment
+
+Following data cleaning, the dataset was evaluated to verify that the preprocessing steps were successful and that the data were suitable for modeling. This assessment included reviewing the cleaned data structure, generating summary statistics, examining factor and numeric variables, identifying missing values, and checking for predictors with little or no variation that could affect model performance.
+
+```{r}
+#| label: data-glimpse
+
+# Take a final look at the cleaned dataset structure.
+glimpse(hr_data)
+```
+
+```{r}
+#| label: data-skim
+
+# Use skim() to generate summary statistics for the cleaned dataset.
+skim(hr_data)
+```
+
+```{r}
+#| label: factor-unique
+
+# View the unique values for each factor variable.
+hr_data %>%
+  select(where(is.factor)) %>%
+  map(unique)
+```
+
+```{r}
+#| label: factor-table
+
+# Create frequency tables for each factor variable.
+hr_data %>%
+  select(where(is.factor)) %>%
+  map(table)
+```
+
+```{r}
+#| label: factor-proportions-rounded
+
+# Create rounded proportion tables for each factor variable.
+hr_data %>%
+  select(where(is.factor)) %>%
+  map(~ round(prop.table(table(.x)), 2))
+```
+
+```{r}
+
+#| label: numeric-unique-count
+
+# Count the number of unique values in each numeric variable.
+hr_data %>%
+  select(where(is.numeric)) %>%
+  map(~ unique(.) %>% length())
+```
+
+```{r}
+#| label: numeric-unique-df-long
+
+# Convert the unique value counts into a readable table.
+numeric_unique_counts <- hr_data %>%
+  select(where(is.numeric)) %>%
+  map(~ unique(.) %>% length()) %>%
+  as.data.frame() %>%
+  pivot_longer(everything()) %>%
+  arrange(desc(value))
+
+numeric_unique_counts %>%
+  print(n = Inf)
+```
+
+```{r}
+#| label: missing-data
+
+# Check for missing values in each variable.
+miss_var_summary(hr_data)
+```
+
+```{r}
+#| label: near-zero-variance
+
+# Check for zero variance and near-zero variance predictors.
+# Variables with little to no variation may not contribute useful information to a model.
+near_zero_variance <- caret::nearZeroVar(
+  hr_data %>% select(-id, -left),
+  saveMetrics = TRUE
+)
+
+near_zero_variance
+```
+
+Following data cleaning, the dataset was evaluated to verify that the preprocessing steps were successful and that the data were suitable for predictive modeling. The cleaned dataset contained 9,999 employee records and 11 variables, including the newly created ID variable. Variable types were successfully converted to their appropriate formats, with binary and categorical predictors represented as factors and the salary variable retained as an ordered factor to preserve its natural ranking of low, medium, and high.
+
+Summary statistics and frequency tables confirmed that the variables contained the expected values and distributions. Approximately 24% of employees in the dataset had left the organization, while 76% remained employed, indicating a moderate class imbalance that will be considered during model development. The majority of employees had not experienced a work accident (85%) or received a promotion within the previous five years (98%). Employees were distributed across ten departments, with the Sales department representing the largest proportion of the workforce (28%). Nearly half of employees were classified in the low salary category (49%), followed by medium (43%) and high (8%) salary levels.
+
+The numeric variables exhibited appropriate levels of variability for analysis. Continuous variables, including satisfaction level, last evaluation, and average monthly hours, contained numerous unique values, while discrete variables such as number of projects and years spent at the company reflected the expected ranges observed within the organization.
+
+The missing data assessment indicated that no variables contained missing values; therefore, no imputation procedures were required. The near-zero variance assessment identified `promotion_last_5years` as the only predictor with limited variability. Because promotions are naturally infrequent in organizational settings and the variable represents a theoretically meaningful predictor of employee turnover, it was retained for subsequent modeling. No zero-variance predictors were identified. Overall, the dataset demonstrated good data quality and required only minimal preprocessing before proceeding to the exploratory data analysis and predictive modeling stages.
+
+# Exploratory Data Analysis
+
+After preprocessing the dataset, exploratory data analysis was conducted to better understand the distribution of each variable and identify patterns associated with employee turnover. Because no missing values were identified during preprocessing, all analyses presented in this section are based on the complete sample of **9,999 employees** (*N* = 9,999). This section includes variable-level summaries and visualizations, correlation analysis among numeric predictors, and crosstab analyses comparing turnover status across selected categorical predictors. These analyses provide context for model development and help identify potential relationships, data patterns, or collinearity concerns before fitting predictive models.
+
+## Individual Variable Exploration
+
+The exploratory data analysis began by examining each variable individually to better understand its distribution and characteristics. Numeric variables were evaluated using descriptive statistics and graphical summaries, while categorical variables were examined using frequency tables and bar charts. Analyzing each variable independently establishes a baseline understanding of the dataset before investigating relationships among predictors or between predictors and employee turnover.
+
+### Numeric Variables
+
+The numeric variables were evaluated using descriptive statistics and histograms to assess their distributions, central tendencies, variability, and potential outliers. Understanding these characteristics provides insight into the range and shape of each variable before examining relationships among predictors or developing predictive models.
+
+#### Satisfaction Level
+
+```{r}
+#| label: summary-satisfaction-level
+
+# Generate summary statistics for employee satisfaction level.
+summary(hr_data$satisfaction_level)
+
+# Calculate the standard deviation.
+sd(hr_data$satisfaction_level)
+```
+
+```{r}
+#| label: histogram-satisfaction-level
+#| fig-height: 4
+#| fig-width: 6
+
+# Visualize the distribution of employee satisfaction levels.
+ggplot(hr_data, aes(x = satisfaction_level)) +
+  geom_histogram(
+    bins = 20,
+    color = "white",
+    fill = "#2A9D8F"
+  ) +
+  labs(
+    title = "Distribution of Employee Satisfaction Levels",
+    x = "Satisfaction Level",
+    y = "Number of Employees"
+  ) +
+  theme_minimal()
+```
+
+Employee satisfaction levels ranged from **0.09 to 1.00** (*M* = 0.61, *SD* = 0.25), with a median of **0.64**. The distribution was concentrated in the moderate to high satisfaction range, although a smaller group of employees reported substantially lower satisfaction levels. The mean being slightly lower than the median suggests a modest negative (left) skew, indicating that relatively few employees with low satisfaction reduced the overall average. This pattern suggests that while most employees reported moderate to high satisfaction, a distinct subgroup experienced considerably lower satisfaction, which may warrant further investigation when examine relationship between employee satisfaction and turnover.
+
+#### Last Evaluation
+
+```{r}
+#| label: summary-last-evaluation
+
+# Generate summary statistics for employee last evaluation scores.
+summary(hr_data$last_evaluation)
+
+# Calculate the standard deviation.
+sd(hr_data$last_evaluation)
+```
+
+```{r}
+#| label: histogram-last-evaluation
+#| fig-height: 4
+#| fig-width: 6
+
+# Visualize the distribution of employee last evaluation scores.
+ggplot(hr_data, aes(x = last_evaluation)) +
+  geom_histogram(
+    bins = 20,
+    color = "white",
+    fill = "#2A9D8F"
+  ) +
+  labs(
+    title = "Distribution of Last Evaluation Scores",
+    x = "Last Evaluation Score",
+    y = "Number of Employees"
+  ) +
+  theme_minimal()
+```
+
+Last evaluation scores ranged from **0.36 to 1.00** (*M* = 0.72, *SD* = 0.17), with a median of **0.72**. The distribution was concentrated in the moderate to high evaluation range, with relatively few employees receiving lower performance evaluations. The nearly identical mean and median suggest an approximately symmetric distribution with little evidence of substantial skewness. Overall, employee performance evaluations tended to be favorable across the organization, although variability in evaluation scores may help determine whether employee performance evaluations are associated with employee turnover.
+
+#### Number of Projects
+
+```{r}
+#| label: summary-number-project
+
+# Generate summary statistics for the number of projects assigned to each employee.
+summary(hr_data$number_project)
+
+# Calculate the standard deviation.
+sd(hr_data$number_project)
+```
+
+```{r}
+#| label: histogram-number-project
+#| fig-height: 4
+#| fig-width: 6
+
+# Visualize the distribution of the number of projects assigned to employees.
+ggplot(hr_data, aes(x = number_project)) +
+  geom_histogram(
+    binwidth = 1,
+    boundary = 1.5,
+    color = "white",
+    fill = "#2A9D8F"
+  ) +
+  scale_x_continuous(breaks = 2:7) +
+  labs(
+    title = "Distribution of Number of Projects",
+    x = "Number of Projects",
+    y = "Number of Employees"
+  ) +
+  theme_minimal()
+```
+
+The number of projects assigned to employees ranged from **2 to 7** (*M* = 3.81, *SD = 1.24*) with a median of **4.00**. Most employees were assigned between **3 and 5 projects**, with four projects representing the most common workload. Relatively few employees were assigned either the minimum or maximum number of projects, indicating that extreme workloads were uncommon within the organization. The distribution suggests that employee workloads were generally centered around a moderate number of projects, although employees assigned substantially fewer or more projects may differ in their turnover patterns. This variable will be examined further to determine whether workload is associated with employee turnover.
+
+#### Average Monthly Hours
+
+```{r}
+#| label: summary-average-monthly-hours
+
+# Generate summary statistics for average monthly hours worked.
+summary(hr_data$average_monthly_hours)
+
+# Calculate the standard deviation.
+sd(hr_data$average_monthly_hours)
+```
+
+```{r}
+#| label: histogram-average-monthly-hours
+#| fig-height: 4
+#| fig-width: 6
+
+# Visualize the distribution of average monthly hours worked.
+ggplot(hr_data, aes(x = average_monthly_hours)) +
+  geom_histogram(
+    bins = 20,
+    color = "white",
+    fill = "#2A9D8F"
+  ) +
+  labs(
+    title = "Distribution of Average Monthly Hours Worked",
+    x = "Average Monthly Hours",
+    y = "Number of Employees"
+  ) +
+  theme_minimal()
+```
+
+Average monthly hours worked ranged from **96 to 310 hours** (*M* = 200.73, *SD* = 50.01), with a median of **199.00** hours. The distribution exhibited multiple peaks, suggesting that employees tended to cluster around several common workload levels rather than a single typical number of hours worked. Most employees averaged between approximately **150 and 270 hours per month**, while relatively few employees worked at the extreme low or high ends of the observed range. The close agreement between the mean and median indicates little evidence of overall skewness despite the presence of multiple peaks in the distribution. These distinct workload patterns may provide insight into differences in employee turnover and will be examined further in subsequent analyses.
+
+#### Time Spent at Company
+
+```{r}
+#| label: summary-time-spent-company
+
+# Generate summary statistics for employee tenure with the company.
+summary(hr_data$time_spend_company)
+
+# Calculate the standard deviation.
+sd(hr_data$time_spend_company)
+```
+
+```{r}
+#| label: histogram-time-spent-company
+#| fig-height: 4
+#| fig-width: 6
+
+# Visualize the distribution of employee tenure with the company.
+ggplot(hr_data, aes(x = time_spend_company)) +
+  geom_histogram(
+    binwidth = 1,
+    boundary = 1.5,
+    color = "white",
+    fill = "#2A9D8F"
+  ) +
+  scale_x_continuous(breaks = 2:10) +
+  labs(
+    title = "Distribution of Time Spent at Company",
+    x = "Years with Company",
+    y = "Number of Employees"
+  ) +
+  theme_minimal()
+```
+
+Time spent at the company ranged from **2 to 10 years** (*M* = 3.52, *SD* = 1.49), with a median tenure of **3.00 years**. The distribution was positively (right) skewed, with most employees having worked for the company between **2 and 4 years**, while relatively few employees had substantially longer tenure. The mean exceeding the median reflects the influence of a smaller group of long-tenured employees who extended the upper tail of the distribution. Overall, the workforce consisted primarily of employees with relatively short organizational tenure, although longer-serving employees may exhibit different turnover patterns. This variable will be examined further to determine whether employee tenure is associated with employee turnover.
+
+### Categorical Variables
+
+The categorical variables were examined using frequency tables and bar charts to summarize the distribution of observations across categories. These summaries provide an overview of the workforce composition and establish a foundation for later analyses exploring how employee turnover differs across groups.
+
+#### Work Accident
+
+```{r}
+#| label: table-work-accident
+
+# Generate a frequency table for employee work accident history.
+table(hr_data$work_accident)
+```
+
+```{r}
+#| label: bar-work-accident
+#| fig-height: 4
+#| fig-width: 6
+
+# Visualize the distribution of employee work accident history.
+ggplot(hr_data, aes(x = work_accident)) +
+  geom_bar(
+    fill = "#2A9D8F",
+    color = "white"
+  ) +
+  labs(
+    title = "Distribution of Employee Work Accident History",
+    x = "Work Accident",
+    y = "Number of Employees"
+  ) +
+  theme_minimal()
+```
+
+Of the **9,999 employees**, **8,528 (85.3%)** had not experienced a workplace accident, while **1,471 (14.7%)** had experienced at least one workplace accident. The distribution indicates that workplace accidents were relatively uncommon within the organization, with the vast majority of employees reporting no prior work-related accidents. Although employees with a history of workplace accidents represented a much smaller proportion of the workforce, differences between these groups will be examined further to determine whether workplace accident history is associated with employee turnover.
+
+#### Promotion in Last 5 Years
+
+```{r}
+#| label: table-promotion-last-5years
+
+# Generate a frequency table for employee promotions within the last five years.
+table(hr_data$promotion_last_5years)
+```
+
+```{r}
+#| label: bar-promotion-last-5years
+#| fig-height: 4
+#| fig-width: 6
+
+# Visualize the distribution of employee promotions within the last five years.
+ggplot(hr_data, aes(x = promotion_last_5years)) +
+  geom_bar(
+    fill = "#2A9D8F",
+    color = "white"
+  ) +
+  labs(
+    title = "Distribution of Employee Promotions in the Last Five Years",
+    x = "Promotion in Last Five Years",
+    y = "Number of Employees"
+  ) +
+  theme_minimal()
+```
+
+Of the **9,999 employees**, **9,791 (97.9%)** had not received a promotion within the last five years, while only **208 (2.1%)** had received a promotion. The distribution indicates that promotions were relatively rare within the organization, with nearly all employees remaining in the same role over the five-year period. Although employees who received a recent promotion represented only a small proportion of the workforce, differences between these groups will be examined further to determine whether recent promotions are associated with employee turnover.
+
+#### Department
+
+```{r}
+#| label: table-department
+
+# Generate a frequency table for employee departments.
+table(hr_data$department)
+```
+
+```{r}
+#| label: bar-department
+#| fig-height: 5
+#| fig-width: 7
+
+# Visualize the distribution of employees across departments.
+ggplot(hr_data, aes(x = department)) +
+  geom_bar(
+    fill = "#2A9D8F",
+    color = "white"
+  ) +
+  labs(
+    title = "Distribution of Employees by Department",
+    x = "Department",
+    y = "Number of Employees"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+Employees were distributed across **10 departments**, with **Sales** employing the largest number of employees (**2,754; 27.5%**), followed by **Technical** (**1,783; 17.8%**) and **Support** (**1,499; 15.0%**). In contrast, **Management** represented the smallest department with **426 employees (4.3%)**. The distribution indicates that the workforce was concentrated within customer-facing and technical departments, while administrative and leadership functions accounted for a smaller proportion of employees. Differences in employee turnover across departments will be examined further to determine whether department membership is associated with employee turnover.
+
+#### Salary
+
+```{r}
+#| label: table-salary
+
+# Generate a frequency table for employee salary levels.
+table(hr_data$salary)
+```
+
+```{r}
+#| label: bar-salary
+#| fig-height: 4
+#| fig-width: 6
+
+# Visualize the distribution of employee salary levels.
+ggplot(hr_data, aes(x = salary)) +
+  geom_bar(
+    fill = "#2A9D8F",
+    color = "white"
+  ) +
+  labs(
+    title = "Distribution of Employee Salary Levels",
+    x = "Salary Level",
+    y = "Number of Employees"
+  ) +
+  theme_minimal()
+```
+
+Employees were distributed across **three salary levels**, with **low salary** representing the largest proportion of the workforce (**4,866; 48.7%**), followed by **medium salary** (**4,301; 43.0%**) and **high salary** (**832; 8.3%**). The distribution indicates that the majority of employees earned salaries within the low or medium pay ranges, while relatively few employees were classified in the high salary category. This pattern suggests that higher salary levels were comparatively uncommon within the organization. Differences in employee turnover across salary levels will be examined further to determine whether compensation level is associated with employee turnover.
+
+#### Employee Turnover
+
+```{r}
+#| label: table-turnover
+
+# Generate a frequency table for employee turnover status.
+table(hr_data$left)
+```
+
+```{r}
+#| label: bar-turnover
+#| fig-height: 4
+#| fig-width: 6
+
+# Visualize the distribution of employee turnover.
+ggplot(hr_data, aes(x = left)) +
+  geom_bar(
+    fill = "#2A9D8F",
+    color = "white"
+  ) +
+  labs(
+    title = "Distribution of Employee Turnover",
+    x = "Employee Turnover",
+    y = "Number of Employees"
+  ) +
+  theme_minimal()
+```
+
+Of the employees included in the dataset, **2,364 (23.6%)** left the organization, while **7,635 (76.4%)** remained employed. The distribution indicates that employee turnover occurred in approximately one-quarter of the workforce, resulting in a moderately imbalanced outcome variable with substantially more employees remaining than leaving. Employee turnover serves as the outcome variable for the predictive models developed later in this analysis. Subsequent analyses will examine how the predictor variables relate to employee turnover to identify the factors most strongly associated with employees leaving the organization.
+
+## Correlation Analysis
+
+Following the individual examination of each variable, correlation analyses were conducted to evaluate relationships among predictors and identify variables associated with employee turnover. A traditional correlation matrix was used to assess relationships and potential collinearity among numeric predictors. A correlation funnel was then used to binarize both numeric and categorical predictors and compare them with the turnover outcome, allowing patterns across employee groups and numeric ranges to be explored before model development.
+
+### Numeric Predictor Correlations
+
+To evaluate relationships among the numeric predictors, a correlation matrix and corresponding heatmap were examined. These analyses were used to identify potential multicollinearity prior to model development and determine whether any predictors should be removed due to excessively strong correlations.
+
+#### Correlation Matrix
+
+A Pearson correlation matrix was computed using the numeric predictor variables to evaluate the strength and direction of linear relationships among predictors. Examining these relationships provides an initial assessment of potential multicollinearity prior to model development.
+
+```{r}
+#| label: correlation-matrix
+
+# Compute the Pearson correlation matrix for the numeric predictor variables.
+cor_matrix <- hr_data %>%
+  select(
+    satisfaction_level,
+    last_evaluation,
+    number_project,
+    average_monthly_hours,
+    time_spend_company
+  ) %>%
+  cor()
+
+cor_matrix
+```
+
+#### Correlation Heatmap
+
+To complement the correlation matrix, a heatmap was created to provide a visual representation of the strength and direction of correlations among the numeric predictors. Darker colors indicate stronger positive or negative relationships, while values closer to zero indicate weaker linear associations.
+
+```{r}
+#| label: correlation-heatmap
+#| fig-height: 6
+#| fig-width: 6
+
+# Visualize the Pearson correlation matrix.
+corrplot(
+  cor_matrix,
+  method = "color",
+  type = "upper",
+  order = "original",
+  addCoef.col = "black",
+  number.cex = 0.8,
+  tl.col = "black",
+  tl.srt = 45,
+  diag = FALSE,
+  col = colorRampPalette(c("#2A9D8F", "white", "#E76F51"))(200)
+)
+```
+
+#### Collinearity Assessment
+
+Examination of the Pearson correlation matrix indicated generally weak to moderate relationships among the numeric predictors. The strongest correlation was observed between **number of projects** and **average monthly hours** (*r* = .42), suggesting that employees assigned more projects generally worked more hours. Moderate positive correlations were also observed between **last evaluation** and **number of projects** (*r* = .35) and between **last evaluation** and **average monthly hours** (*r* = .35). All remaining correlations were relatively weak. Overall, the observed correlations did not indicate evidence of problematic multicollinearity, and all numeric predictors were retained for subsequent analyses and model development.
+
+### Correlation Funnel
+
+The correlation funnel was used to explore relationships between employee turnover and both numeric and categorical predictors. This technique converts predictors into binary features and correlates each resulting feature with the turnover outcome. Correlations farther from zero indicate stronger associations with employee turnover, while the sign indicates the direction of the relationship.
+
+```{r}
+#| label: correlation-funnel
+#| fig-height: 8
+#| waring: false 
+
+#install.packages("correlationfunnel")
+library(correlationfunnel)
+
+# Prefer the correlate() function from {correlationfunnel}.
+conflict_prefer("correlate", "correlationfunnel")
+
+# Binarize all predictors and correlate them with employee turnover.
+hr_data %>%
+  select(-id) %>%
+  
+  # Temporarily recode turnover as 1 = left and 0 = stayed.
+  mutate(left = as.numeric(left == "left")) %>%
+  
+  # Divide numeric predictors into four bins and create binary indicators
+  # for numeric ranges and categorical levels.
+  binarize(
+    n_bins = 4,
+    thresh_infreq = 0.01
+  ) %>%
+  
+  # Correlate each binary feature with the turnover outcome.
+  correlate(target = left__1) %>%
+  
+  # Create a static correlation funnel for the PDF report.
+  plot_correlation_funnel(interactive = FALSE) +
+  labs(
+    title = "Correlation Funnel — Employee Turnover Predictors"
+  ) +
+  theme_minimal()
+```
+
+The correlation funnel provides an initial assessment of the relationships between employee turnover and each predictor by converting variables into binary features and computing their correlations with the turnover outcome. The strongest associations were observed for **low satisfaction levels**, which were positively associated with employee turnover, whereas **high satisfaction levels** were negatively associated with turnover. Employees assigned a greater number of projects and those working longer monthly hours also demonstrated modest positive associations with turnover. In contrast, department membership and promotion history exhibited relatively weak relationships with employee turnover. These findings provide an initial indication of potentially important predictors and will be explored further through crosstab analyses and predictive modeling.
+
+## Crosstab Analyses
+
+To further investigate the relationships between employee turnover and key predictor variables, crosstab analyses were conducted using variables identified as potentially important during the individual variable and correlation analyses. Crosstabs summarize the distribution of employee turnover across groups and provide an intuitive view of how turnover rates differ among employee segments. The selected variables include employee satisfaction, number of projects, salary level, and department.
+
+### Satisfaction Level by Employee Turnover
+
+Employee satisfaction demonstrated the strongest relationship with turnover in the correlation funnel. To further examine this relationship, employee satisfaction was grouped into four levels and compared with employee turnover using a crosstab and corresponding visualization.
+
+```{r}
+#| label: create-satisfaction-groups
+
+# Group employee satisfaction into four levels for crosstab analysis.
+satisfaction_crosstab <- hr_data %>%
+  mutate(
+    satisfaction_group = cut(
+      satisfaction_level,
+      breaks = 4,
+      include.lowest = TRUE,
+      labels = c(
+        "Low",
+        "Medium-Low",
+        "Medium-High",
+        "High"
+      )
+    )
+  )
+```
+
+```{r}
+#| label: satisfaction-crosstab
+
+# Crosstab of employee satisfaction group by turnover status.
+table(
+  satisfaction_crosstab$satisfaction_group,
+  satisfaction_crosstab$left
+)
+```
+
+```{r}
+#| label: satisfaction-row-percentages
+
+# Calculate turnover proportions within each satisfaction group.
+round(
+  prop.table(
+    table(
+      satisfaction_crosstab$satisfaction_group,
+      satisfaction_crosstab$left
+    ),
+    margin = 1
+  ),
+  3
+)
+```
+
+```{r}
+#| label: satisfaction-crosstab-plot
+#| fig-height: 5
+#| fig-width: 7
+
+# Visualize employee turnover across satisfaction groups.
+ggplot(
+  satisfaction_crosstab,
+  aes(
+    x = satisfaction_group,
+    fill = left
+  )
+) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(
+    values = c(
+      "left" = "#E76F51",
+      "stayed" = "#2A9D8F"
+    ),
+    name = "Employee Turnover"
+  ) +
+  labs(
+    title = "Employee Turnover by Satisfaction Level",
+    x = "Satisfaction Level",
+    y = "Percentage of Employees"
+  ) +
+  theme_minimal()
+```
+
+Employee turnover differed substantially across the four employee satisfaction groups. Employees in the **Low** and **Medium-Low** satisfaction groups exhibited the highest turnover rates, with **643 of 1,370 employees (46.9%)** and **1,071 of 2,373 employees (45.1%)**, respectively, leaving the organization. In contrast, turnover decreased dramatically among employees in the **Medium-High** satisfaction group, where only **209 of 3,132 employees (6.7%)** left the organization. Employees in the **High** satisfaction group also demonstrated relatively low turnover, with **441 of 3,124 employees (14.1%)** leaving the organization, although this turnover rate was modestly higher than that observed for the Medium-High group. Overall, these findings indicate that employee satisfaction is strongly associated with employee turnover and support the results of the correlation funnel, suggesting that satisfaction is likely to be an important predictor in the subsequent predictive models.
+
+### Number of Projects by Employee Turnover
+
+The correlation analyses suggested that project workload may be associated with employee turnover. To further examine this relationship, employee turnover was compared across the number of projects assigned to employees using a crosstab and corresponding visualization.
+
+```{r}
+#| label: projects-crosstab
+
+# Crosstab of number of projects by turnover status.
+table(
+  hr_data$number_project,
+  hr_data$left
+)
+```
+
+```{r}
+#| label: projects-turnover-proportions
+
+# Calculate turnover proportions within each project level.
+round(
+  prop.table(
+    table(
+      hr_data$number_project,
+      hr_data$left
+    ),
+    margin = 1
+  ),
+  3
+)
+```
+
+```{r}
+#| label: projects-crosstab-plot
+#| fig-height: 5
+#| fig-width: 7
+
+# Visualize employee turnover by number of projects.
+ggplot(
+  hr_data,
+  aes(
+    x = factor(number_project),
+    fill = left
+  )
+) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::label_percent()) +
+  scale_fill_manual(
+    values = c(
+      "left" = "#E76F51",
+      "stayed" = "#2A9D8F"
+    ),
+    name = "Employee Turnover"
+  ) +
+  labs(
+    title = "Employee Turnover by Number of Projects",
+    x = "Number of Projects",
+    y = "Percentage of Employees"
+  ) +
+  theme_minimal()
+```
+
+Employee turnover varied considerably across project workloads. Employees assigned **three or four projects** exhibited the lowest turnover rates, with only **46 of 2,741 employees (1.7%)** and **254 of 2,837 employees (9.0%)**, respectively, leaving the organization. In contrast, employees assigned **two projects** experienced substantially higher turnover, with **1,041 of 1,593 employees (65.3%)** leaving the organization. Turnover also increased markedly among employees assigned **six or more projects**, where **443 of 796 employees (55.7%)** assigned six projects left the organization, and **all 179 employees (100.0%)** assigned seven projects left the organization. Overall, these findings suggest that both underutilization and excessive workload may be associated with increased employee turnover, whereas a moderate workload appears to be associated with the highest employee retention.
+
+### Salary Level by Employee Turnover
+
+Salary level was identified as a potentially important predictor of employee turnover during the exploratory analyses. To further examine this relationship, employee turnover was compared across the three salary levels using a crosstab and corresponding visualization.
+
+```{r}
+#| label: salary-crosstab
+
+# Crosstab of salary level by turnover status.
+table(
+  hr_data$salary,
+  hr_data$left
+)
+```
+
+```{r}
+#| label: salary-turnover-proportions
+
+# Calculate turnover proportions within each salary level.
+round(
+  prop.table(
+    table(
+      hr_data$salary,
+      hr_data$left
+    ),
+    margin = 1
+  ),
+  3
+)
+```
+
+```{r}
+#| label: salary-crosstab-plot
+#| fig-height: 5
+#| fig-width: 7
+
+# Visualize employee turnover by salary level.
+ggplot(
+  hr_data,
+  aes(
+    x = salary,
+    fill = left
+  )
+) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::label_percent()) +
+  scale_fill_manual(
+    values = c(
+      "left" = "#E76F51",
+      "stayed" = "#2A9D8F"
+    ),
+    name = "Employee Turnover"
+  ) +
+  labs(
+    title = "Employee Turnover by Salary Level",
+    x = "Salary Level",
+    y = "Percentage of Employees"
+  ) +
+  theme_minimal()
+```
+
+Employee turnover decreased steadily as salary level increased. Among employees in the **low salary** group, **1,413 of 4,866 employees (29.0%)** left the organization, representing the highest turnover rate across the three salary levels. Employees earning a **medium salary** experienced a lower turnover rate, with **888 of 4,301 employees (20.6%)** leaving the organization. In contrast, employees in the **high salary** group exhibited the lowest turnover rate, with only **63 of 832 employees (7.6%)** leaving the organization. Overall, these findings suggest that higher salary levels were associated with greater employee retention, indicating that compensation may be an important factor related to employee turnover.
+
+### Department by Employee Turnover
+
+Although the correlation funnel indicated only weak overall associations between department and employee turnover, department membership remains an important organizational characteristic that may identify areas with relatively higher or lower turnover rates. To further examine these differences, employee turnover was compared across departments using a crosstab and corresponding visualization.
+
+```{r}
+#| label: department-crosstab
+
+# Crosstab of department by turnover status.
+table(
+  hr_data$department,
+  hr_data$left
+)
+```
+
+```{r}
+#| label: department-turnover-proportions
+
+# Calculate turnover proportions within each department.
+round(
+  prop.table(
+    table(
+      hr_data$department,
+      hr_data$left
+    ),
+    margin = 1
+  ),
+  3
+)
+```
+
+```{r}
+#| label: department-crosstab-plot
+#| fig-height: 6
+#| fig-width: 8
+
+# Visualize employee turnover by department.
+ggplot(
+  hr_data,
+  aes(
+    x = reorder(department, department, function(x) -length(x)),
+    fill = left
+  )
+) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::label_percent()) +
+  scale_fill_manual(
+    values = c(
+      "left" = "#E76F51",
+      "stayed" = "#2A9D8F"
+    ),
+    name = "Employee Turnover"
+  ) +
+  labs(
+    title = "Employee Turnover by Department",
+    x = "Department",
+    y = "Percentage of Employees"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+Employee turnover varied modestly across departments. The **Human Resources** department exhibited the highest turnover rate, with **138 of 493 employees (28.0%)** leaving the organization, followed by **Accounting**, where **134 of 516 employees (26.0%)** left, and **Technical**, where **450 of 1,783 employees (25.2%)** left. In contrast, **Research and Development** demonstrated the lowest turnover rate, with only **76 of 524 employees (14.5%)** leaving the organization, followed by **Management**, where **66 of 426 employees (15.5%)** left. The remaining departments exhibited relatively similar turnover rates, generally ranging between **22% and 25%**. Overall, departmental differences in employee turnover were comparatively modest, suggesting that employee satisfaction, workload, and salary may be more strongly associated with employee turnover than department membership alone.
+
+## Exploratory Data Analysis Summary
+
+Exploratory data analysis identified several variables with meaningful relationships to employee turnover. Employee satisfaction demonstrated the strongest association with turnover, with employees reporting lower satisfaction exhibiting substantially higher turnover rates. Project workload also showed a pronounced nonlinear relationship, suggesting that both underutilization and excessive workload may contribute to employee turnover, while employees assigned moderate workloads exhibited the highest retention. Higher salary levels were associated with lower turnover rates, whereas departmental differences were comparatively modest. Correlation analyses indicated no evidence of problematic multicollinearity among the numeric predictors, supporting the retention of all variables for subsequent modeling. Collectively, these findings provide an initial understanding of the factors associated with employee turnover and establish a strong foundation for the predictive models developed in the following sections.
+
+# Model Preparation
+
+Following exploratory data analysis, the dataset was prepared for predictive modeling. During the exploratory analysis, the employee turnover outcome was found to exhibit a moderate class imbalance, with substantially more employees remaining than leaving the organization. This modeling workflow preserves that distribution through a stratified train/test split while protecting the held-out test set from information leakage. Feature selection is performed using only the training data, followed by cross-validation and the development of preprocessing recipes that evaluate multiple approaches for addressing class imbalance during model training. Collectively, these steps establish a consistent and reproducible framework for developing and evaluating the candidate predictive models.
+
+## Data Splitting
+
+Before feature selection and model development, the dataset was divided into separate training and testing sets. This step is performed first because any procedure that uses the outcome variable to make modeling decisions, such as feature selection, should be based only on the training data. Allowing the testing data to influence these decisions would introduce data leakage, resulting in overly optimistic estimates of model performance. By reserving the testing set until final model evaluation, it serves as an independent assessment of how well the selected model generalizes to new observations.
+
+A **70/30 train/test split** was selected to provide sufficient data for model training while reserving an independent subset for final model evaluation. Approximately 70% of the observations were allocated to the training set, providing adequate data for feature selection, cross-validation, and model development, while the remaining 30% were reserved as an untouched testing set for the final assessment of model performance. A **stratified** split was used to preserve the original distribution of the employee turnover outcome in both datasets, ensuring that the proportions of employees who left and remained with the organization were maintained throughout the modeling process.
+
+```{r}
+#| label: data-split
+
+# Set a random seed to ensure the split is reproducible.
+set.seed(42)
+
+# Create a stratified 70/30 training and testing split.
+# Stratification preserves the original turnover distribution in both datasets.
+data_split <- initial_split(
+  hr_data,
+  prop = 0.70,
+  strata = "left"
+)
+
+# Extract the training and testing datasets.
+train_data <- training(data_split)
+test_data  <- testing(data_split)
+
+# Display the distribution of the outcome variable in each dataset.
+cat("Training Set:\n")
+tabyl(train_data$left) %>%
+  adorn_pct_formatting() %>%
+  print()
+
+cat("\nTesting Set:\n")
+tabyl(test_data$left) %>%
+  adorn_pct_formatting() %>%
+  print()
+```
+
+The stratified sampling procedure successfully preserved the original distribution of the employee turnover outcome across the training and testing datasets. Of the **6,998 observations** allocated to the training set, **1,654 (23.6%)** represented employees who left the organization and **5,344 (76.4%)** represented employees who remained. Similarly, the testing set contained **710 employees (23.7%)** who left and **2,291 employees (76.3%)** who remained. These proportions closely match those observed in the full dataset (23.6% left and 76.4% stayed), indicating that the stratified split successfully maintained the original class distribution while creating independent datasets for model development and evaluation.
+
+## Feature Selection
+
+Boruta feature selection was performed using the training data to identify the predictors that provide the most useful information for predicting employee turnover. Boruta is a random forest–based feature selection method that evaluates the relative importance of each predictor and determines whether it contributes meaningful predictive information beyond what would be expected by chance. Predictors identified as important are retained for model development, while variables that contribute little predictive value are removed. Performing feature selection using only the training data prevents data leakage and ensures that the independent test set remains unbiased for final model evaluation.
+
+```{r}
+#| label: boruta
+#| cache: true
+
+# Set the seed so the Boruta results can be reproduced.
+set.seed(42)
+
+# Prepare the training data for Boruta.
+# Remove the ID variable and convert categorical predictors to numeric values.
+boruta_input <- train_data %>%
+  select(-id) %>%
+  mutate(
+    across(
+      -left & where(is.character),
+      ~ as.numeric(as.factor(.))
+    )
+  ) %>%
+  mutate(
+    across(
+      -left & where(is.factor),
+      as.numeric
+    )
+  )
+
+# Confirm that the outcome remains a factor, all predictors are numeric,
+# and the Boruta input contains no missing values.
+stopifnot(
+  "left must be a factor for Boruta classification" =
+    is.factor(boruta_input$left),
+  "No character columns allowed; Boruta requires numeric predictors" =
+    !any(sapply(select(boruta_input, -left), is.character)),
+  "No factor columns allowed; Boruta requires numeric predictors" =
+    !any(sapply(select(boruta_input, -left), is.factor)),
+  "No missing values allowed in Boruta input" =
+    !anyNA(boruta_input)
+)
+
+# Display the predictor column types passed to Boruta.
+cat("Column types passed to Boruta:\n")
+
+boruta_input %>%
+  select(-left) %>%
+  summarise(across(everything(), class)) %>%
+  pivot_longer(
+    everything(),
+    names_to = "variable",
+    values_to = "type"
+  ) %>%
+  count(type) %>%
+  print()
+
+# Run Boruta feature selection using the training data only.
+boruta_result <- Boruta(
+  left ~ .,
+  data = boruta_input,
+  doTrace = 0,
+  maxRuns = 150
+)
+
+# Resolve tentative predictors and retain confirmed variables.
+boruta_final <- TentativeRoughFix(boruta_result)
+
+boruta_vars <- getSelectedAttributes(
+  boruta_final,
+  withTentative = FALSE
+)
+
+# Visualize the final Boruta feature-selection results.
+plot(
+  boruta_final,
+  las = 2,
+  cex.axis = 0.7,
+  xlab = "",
+  main = paste0(
+    "Boruta Feature Importance (Training Data Only)\n",
+    "(Green = Confirmed, Red = Rejected, Blue = Shadow)"
+  )
+)
+```
+
+```{r}
+#| label: boruta-decision-table
+
+# Extract the Boruta feature-selection results.
+boruta_decisions <- Boruta::attStats(boruta_final)
+
+# Move the variable names from row names into a column.
+boruta_decisions <- tibble::rownames_to_column(
+  boruta_decisions,
+  var = "variable"
+)
+
+# Sort the variables from highest to lowest mean importance.
+boruta_decisions <- dplyr::arrange(
+  boruta_decisions,
+  dplyr::desc(meanImp)
+)
+
+# Convert the results to a tibble.
+boruta_decisions <- tibble::as_tibble(
+  boruta_decisions
+)
+
+# Display the Boruta decisions in a PDF-compatible table.
+knitr::kable(
+  boruta_decisions,
+  caption = "Boruta Feature Decisions — Training Data Only",
+  digits = 2
+)
+```
+
+```{r}
+#| label: boruta-select
+
+# Display the predictors confirmed by Boruta using the training data only.
+cat("Variables confirmed by Boruta (training data only):\n")
+print(boruta_vars)
+```
+
+Boruta confirmed all nine predictor variables as providing meaningful information for predicting employee turnover. **Satisfaction level** demonstrated the highest average importance, followed by **number of projects**, **time spent at the company**, **last evaluation**, and **average monthly hours**. Although **work accident history, salary, promotion within the last five years, and department** showed lower relative importance, each was still classified as confirmed. No predictors were rejected or identified as tentative; therefore, all nine predictors were retained for subsequent model development.
+
+## Cross-Validation
+
+Cross-validation was performed using the training dataset after feature selection. Because Boruta confirmed all nine predictors, each fold contained the complete set of modeling variables. A **10-fold stratified cross-validation** procedure was used, in which the training data were divided into ten approximately equal subsets while preserving the original employee turnover distribution within each fold. During model training, nine folds were used to fit the model and the remaining fold was used for validation. This process was repeated until each fold had served once as the validation set, providing a robust estimate of model performance while reducing the risk of overfitting. The resulting cross-validation folds were subsequently used during model tuning and comparison to ensure that all candidate models were evaluated using the same resampling strategy.
+
+```{r}
+#| label: cv-folds
+
+# Set the seed to ensure reproducible cross-validation folds.
+set.seed(42)
+
+# Create 10-fold stratified cross-validation folds using the training data.
+# Stratification preserves the original turnover distribution in each fold.
+cv_folds <- vfold_cv(
+  train_data,
+  v = 10,
+  strata = "left"
+)
+
+# Display the cross-validation object.
+cv_folds
+```
+
+## Preprocessing Recipes
+
+Preprocessing recipes were developed to prepare the training data for model development. During the exploratory data analysis, the employee turnover outcome was found to exhibit a moderate class imbalance, with substantially more employees remaining than leaving the organization. Rather than assuming a single correction method was optimal, multiple preprocessing recipes were created to compare several approaches to handling class imbalance while applying a consistent set of data transformations across all candidate models.
+
+### Assessing Skewness for Yeo-Johnson
+
+Before constructing the preprocessing recipes, skewness was assessed for the numeric predictors using only the training data. The Yeo-Johnson transformation is most useful for substantially skewed numeric variables and is therefore applied selectively rather than to every numeric predictor. Variables with an absolute skewness value greater than 1 were identified as candidates for transformation.
+
+```{r}
+#| label: skewness-assessment
+
+# Calculate skewness for numeric predictors using the training data only.
+# The ID variable is excluded because it is not used as a predictor.
+skewness_df <- train_data %>%
+  select(where(is.numeric)) %>%
+  select(-id) %>%
+  summarise(
+    across(
+      everything(),
+      ~ {
+        x <- .x[!is.na(.x)]
+        n <- length(x)
+        m <- mean(x)
+        s <- sd(x)
+
+        # Return NA for constant variables or samples that are too small.
+        if (s == 0 || n < 3) {
+          NA_real_
+        } else {
+          (sum((x - m)^3) / n) / s^3
+        }
+      }
+    )
+  ) %>%
+  pivot_longer(
+    everything(),
+    names_to = "variable",
+    values_to = "skewness"
+  ) %>%
+  arrange(desc(abs(skewness)))
+
+# Display skewness values for all numeric predictors.
+print(skewness_df, n = Inf)
+
+# Retain predictors with substantial skewness for Yeo-Johnson transformation.
+skewed_feature_names <- skewness_df %>%
+  filter(
+    !is.na(skewness),
+    abs(skewness) > 1
+  ) %>%
+  pull(variable)
+
+cat("\nVariables flagged for Yeo-Johnson (|skewness| > 1):\n")
+print(skewed_feature_names)
+```
+
+Skewness was evaluated for all numeric predictors using the training data only. **Time spent at the company** exhibited substantial positive skewness (skewness = 1.84) and was therefore selected for Yeo-Johnson transformation. The remaining numeric predictors had absolute skewness values below 1 and were not transformed.
+
+### Base Recipe
+
+A base preprocessing recipe was then created to establish a consistent preprocessing pipeline for subsequent model development.
+
+```{r}
+#| label: recipe-base
+
+# Create a reusable base recipe for all imbalance-handling strategies.
+base_recipe <- function(data, sampling_step = NULL) {
+
+  rec <- recipe(left ~ ., data = data) %>%
+
+    # Assign the ID variable a non-predictor role.
+    update_role(id, new_role = "ID") %>%
+
+    # Apply Yeo-Johnson to substantially skewed numeric predictors.
+    step_YeoJohnson(all_of(skewed_feature_names)) %>%
+
+    # Normalize numeric predictors to a common scale.
+    step_normalize(all_numeric_predictors()) %>%
+
+    # Remove near-zero variance predictors.
+    step_nzv(all_predictors()) %>%
+
+    # Convert nominal predictors into dummy variables.
+    step_dummy(all_nominal_predictors(), one_hot = FALSE)
+
+  # Add an imbalance-handling step when one is supplied.
+  if (!is.null(sampling_step)) {
+    rec <- sampling_step(rec)
+  }
+
+  rec
+}
+```
+
+### Class Imbalance Strategies
+
+Because the employee turnover outcome was moderately imbalanced, multiple strategies were evaluated to determine whether adjusting for class imbalance improved predictive performance. The baseline recipe retained the original class distribution, while upsampling, downsampling, SMOTE, and ADASYN modified the training data to increase representation of employees who left. In addition, a class-weighting approach was implemented, allowing selected models to place greater emphasis on correctly classifying minority-class observations without altering the underlying training data. Each sampling step uses `skip = TRUE`, ensuring that balancing is applied only to the training portion of each resample and never to validation or test data.
+
+```{r}
+#| label: recipes-all
+
+# 1. No sampling — retain the original class distribution as the baseline.
+rec_none <- base_recipe(train_data)
+
+# 2. Upsample — randomly duplicate minority-class observations.
+rec_upsample <- base_recipe(
+  train_data,
+  sampling_step = function(r) {
+    step_upsample(
+      r,
+      left,
+      over_ratio = 1,
+      skip = TRUE
+    )
+  }
+)
+
+# 3. Downsample — randomly remove majority-class observations.
+rec_downsample <- base_recipe(
+  train_data,
+  sampling_step = function(r) {
+    step_downsample(
+      r,
+      left,
+      under_ratio = 1,
+      skip = TRUE
+    )
+  }
+)
+
+# 4. SMOTE — generate synthetic minority-class observations.
+rec_smote <- base_recipe(
+  train_data,
+  sampling_step = function(r) {
+    step_smote(
+      r,
+      left,
+      over_ratio = 1,
+      skip = TRUE
+    )
+  }
+)
+
+# 5. ADASYN — generate synthetic minority observations,
+# with greater emphasis on cases that are more difficult to classify.
+rec_adasyn <- base_recipe(
+  train_data,
+  sampling_step = function(r) {
+    step_adasyn(
+      r,
+      left,
+      over_ratio = 1,
+      skip = TRUE
+    )
+  }
+)
+```
+
+In addition to sampling-based approaches, class weighting was evaluated as an alternative method for addressing the unequal outcome distribution. Unlike resampling, class weighting retains all training observations and assigns greater importance to employees in the minority class during model fitting.
+
+```{r}
+#| label: recipe-weights
+
+# Compute inverse-frequency class weights from the training set.
+class_counts <- table(train_data$left)
+total_n <- sum(class_counts)
+
+weight_left <- total_n / (2 * class_counts["left"])
+weight_stayed <- total_n / (2 * class_counts["stayed"])
+
+cat(
+  glue::glue(
+    "Weight for left   (minority class): {round(weight_left, 3)}\n",
+    "Weight for stayed (majority class): {round(weight_stayed, 3)}\n",
+    "Ratio left/stayed                 : ",
+    "{round(weight_left / weight_stayed, 2)}x\n"
+  )
+)
+
+# Add the case-weight column before building the recipe.
+train_data_w <- train_data %>%
+  mutate(
+    case_wt = importance_weights(
+      if_else(
+        left == "left",
+        weight_left,
+        weight_stayed
+      )
+    )
+  )
+
+# Weighted folds must be created from train_data_w so that every
+# analysis fold includes the case_wt column.
+set.seed(42)
+
+cv_folds_w <- vfold_cv(
+  train_data_w,
+  v = 10,
+  strata = "left"
+)
+
+# Build the weighted recipe from the weighted training data.
+# recipe() automatically assigns case_wt the "case_weights" role.
+rec_weights <- recipe(left ~ ., data = train_data_w) %>%
+  update_role(id, new_role = "ID") %>%
+  step_YeoJohnson(all_of(skewed_feature_names)) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_nzv(all_predictors()) %>%
+  step_dummy(all_nominal_predictors(), one_hot = FALSE)
+```
+
+```{r}
+#| label: patch-for-weights-models
+
+# Add a placeholder case-weight column to the test data.
+# This value does not affect model evaluation.
+test_data_w <- test_data %>%
+  mutate(
+    case_wt = importance_weights(weight_stayed)
+  )
+
+# Build a train/test split with matching weighted data structures.
+data_split_w <- rsample::make_splits(
+  x = list(
+    analysis = seq_len(nrow(train_data_w)),
+    assessment = nrow(train_data_w) + seq_len(nrow(test_data_w))
+  ),
+  data = dplyr::bind_rows(
+    train_data_w,
+    test_data_w
+  )
+)
+
+# Combined weighted data for later model refitting and VIP analysis.
+model_data_w <- dplyr::bind_rows(
+  train_data_w,
+  test_data_w
+)
+```
+
+At this stage, no single class imbalance strategy was assumed to be optimal. The no-sampling recipe was retained as a baseline, while upsampling, downsampling, SMOTE, ADASYN, and class weighting were carried forward for subsequent model development. Each approach would be evaluated using cross-validation to determine whether adjusting for class imbalance improved predictive performance.
+
+# Model Development
+
+Four classification models were developed to predict employee turnover: penalized logistic regression, random forest, XGBoost, and support vector machine (SVM). These models represent different approaches to classification and were selected to provide a broad comparison of predictive performance. Each model was tuned using the previously established cross-validation framework and evaluated across the alternative preprocessing recipes.
+
+## Penalized Logistic Regression
+
+Penalized logistic regression was used as the first classification model for predicting employee turnover. Unlike traditional logistic regression, penalization helps control model complexity by shrinking coefficient estimates, which can improve generalizability and reduce the risk of overfitting. The penalty strength and mixture of Lasso and Ridge regularization were treated as tunable hyperparameters and optimized during model development.
+
+```{r}
+#| label: logistic-regression-spec
+
+# Specify a penalized logistic regression model.
+# Both the penalty strength and mixture are tuned during model development.
+spec_lr <- logistic_reg(
+  penalty = tune(),
+  mixture = tune()
+) %>%
+  
+  # Use glmnet as the model engine.
+  # Increase the maximum number of iterations to support convergence.
+  set_engine("glmnet", maxit = 1e5) %>%
+  
+  # Specify a classification model for predicting employee turnover.
+  set_mode("classification")
+```
+
+## Random Forest
+
+Random forest was used as a more complex classification approach that combines predictions across multiple decision trees. By aggregating many trees, the model can capture nonlinear relationships and interactions among predictors while reducing the instability associated with relying on a single decision tree. Key model parameters were tuned to identify the combination that provided the strongest predictive performance.
+
+```{r}
+#| label: random-forest-spec
+
+# Specify a random forest classification model.
+# Tune the number of predictors considered at each split (mtry),
+# the number of trees, and the minimum number of observations
+# required for a node to be split (min_n).
+spec_rf <- rand_forest(
+  mtry  = tune(),
+  trees = tune(),
+  min_n = tune()
+) %>%
+  
+  # Use the ranger engine for random forest modeling.
+  # Set seed 42 for reproducibility and use permutation importance
+  # to support later evaluation of predictor importance.
+  set_engine(
+    "ranger",
+    seed       = 42,
+    importance = "permutation"
+  ) %>%
+  
+  # Specify classification because the outcome indicates
+  # whether an employee left or stayed.
+  set_mode("classification")
+```
+
+## XGBoost
+
+XGBoost was included as a high-complexity classification model to evaluate the upper range of predictive performance for employee turnover. The model builds a sequence of decision trees, with each new tree attempting to improve upon the errors of the previous trees. Because XGBoost performance is highly dependent on its hyperparameter settings, the learning rate and number of trees were evaluated first before the remaining model parameters were optimized.
+
+```{r}
+#| label: xgb-stage1-tune
+#| cache: true
+
+# Record the start time for the Stage 1 XGBoost tuning process.
+start_time <- Sys.time()
+
+# Specify the Stage 1 XGBoost classification model.
+# Tune both the number of trees and the learning rate.
+xgb_spec_stage1 <- boost_tree(
+  mode       = "classification",
+  engine     = "xgboost",
+  trees      = tune(),
+  learn_rate = tune()
+)
+
+# Create the Stage 1 workflow using the baseline preprocessing recipe.
+wf_xgb_stage1 <- workflow() %>%
+  add_model(xgb_spec_stage1) %>%
+  add_recipe(rec_none)
+
+# Set seed 42 for reproducibility.
+set.seed(42)
+
+# Create a random grid of learning-rate values.
+grid_stage1_learn_rate <- wf_xgb_stage1 %>%
+  extract_parameter_set_dials() %>%
+  grid_random(size = 15) %>%
+  select(learn_rate)
+
+# Create tree values from 500 to 5,000 in increments of 500.
+tree_values <- seq(500, 5000, by = 500)
+
+# Combine each tree value with each candidate learning rate.
+# This allows the tuning process to evaluate the requested tree counts
+# automatically rather than fitting each tree count manually.
+grid_stage1 <- tidyr::crossing(
+  trees      = tree_values,
+  learn_rate = grid_stage1_learn_rate$learn_rate
+)
+
+# Register parallel processing to reduce tuning time.
+doParallel::registerDoParallel(
+  cores = max(1, parallel::detectCores() - 1)
+)
+
+# Tune the Stage 1 XGBoost model using the 10-fold
+# stratified cross-validation folds.
+tune_stage1 <- tune_grid(
+  wf_xgb_stage1,
+  resamples = cv_folds,
+  grid      = grid_stage1,
+  metrics   = metric_set(j_index, pr_auc),
+  control   = control_grid(
+    save_pred     = FALSE,
+    parallel_over = "everything",
+    verbose       = FALSE
+  )
+)
+
+# Stop parallel processing after tuning is complete.
+doParallel::stopImplicitCluster()
+
+# Identify the best learning rate from the Stage 1 tuning results.
+best_learn_rate <- tune_stage1 %>%
+  collect_metrics() %>%
+  arrange(desc(mean)) %>%
+  slice(1) %>%
+  pull(learn_rate)
+
+# Display the best learning rate and J-Index.
+cat(
+  glue::glue(
+    "Stage 1 best learn_rate: {round(best_learn_rate, 6)}\n"
+  )
+)
+
+cat(
+  glue::glue(
+    "Stage 1 best J-Index    : {round(max(collect_metrics(tune_stage1)$mean), 4)}\n"
+  )
+)
+
+# Record and display the total Stage 1 tuning time.
+end_time <- Sys.time()
+
+cat(
+  glue::glue(
+    "Time: {round(difftime(end_time, start_time, units = 'mins'), 2)} minutes\n"
+  )
+)
+```
+
+To determine whether increasing the number of trees meaningfully improved XGBoost performance, the Stage 1 results were compared across tree counts ranging from 500 to 5,000. The best cross-validated J-Index at each tree count was examined to identify the point at which additional trees provided little or no improvement in predictive performance.
+
+```{r}
+#| label: xgb-stage1-tree-results
+
+# Review XGBoost Stage 1 performance across the tested tree counts.
+tune_stage1 %>%
+  collect_metrics() %>%
+  filter(.metric == "j_index") %>%
+  group_by(trees) %>%
+  summarise(
+    best_j_index = max(mean),
+    .groups = "drop"
+  ) %>%
+  arrange(trees)
+```
+
+XGBoost performance remained highly consistent across the tested tree counts. The highest J-Index was observed at 3,000 trees, although differences across the tested values were minimal. Based on these results, 3,000 trees were retained for subsequent XGBoost development.
+
+```{r}
+# Identify the best learning rate for the selected 3,000-tree model
+# using J-Index as the performance metric.
+best_stage1 <- tune_stage1 %>%
+  collect_metrics() %>%
+  filter(
+    .metric == "j_index",
+    trees == 3000
+  ) %>%
+  arrange(desc(mean)) %>%
+  slice(1)
+
+# Save the best learning rate for use in the final XGBoost specification.
+best_learn_rate <- best_stage1 %>%
+  pull(learn_rate)
+
+# Display the selected tree count, learning rate, and J-Index.
+cat(
+  glue::glue(
+    "Stage 1 selected trees   : 3000\n",
+    "Stage 1 best learn_rate : {round(best_learn_rate, 6)}\n",
+    "Stage 1 best J-Index    : {round(best_stage1$mean, 4)}\n"
+  )
+)
+```
+
+```{r}
+#| label: xgb-stage1-plot
+
+# Plot the Stage 1 learning-rate results for the selected 3,000-tree model.
+tune_stage1 %>%
+  collect_metrics() %>%
+  filter(
+    .metric == "j_index",
+    trees == 3000
+  ) %>%
+  ggplot(aes(x = learn_rate, y = mean)) +
+  geom_point(size = 3, color = "#2a9d8f") +
+  geom_line(color = "#2a9d8f", alpha = 0.5) +
+  geom_vline(
+    xintercept = best_learn_rate,
+    linetype = "dashed",
+    color = "#e63946"
+  ) +
+  annotate(
+    "text",
+    x = best_learn_rate * 1.15,
+    y = min(
+      tune_stage1 %>%
+        collect_metrics() %>%
+        filter(
+          .metric == "j_index",
+          trees == 3000
+        ) %>%
+        pull(mean)
+    ),
+    label = glue::glue(
+      "Best\n{round(best_learn_rate, 5)}"
+    ),
+    size = 3,
+    hjust = 0,
+    color = "#e63946"
+  ) +
+  scale_x_log10() +
+  theme_minimal() +
+  labs(
+    title = "XGBoost Stage 1 — Learn Rate Search",
+    subtitle = "J-Index on 10-fold CV | 3,000 trees | rec_none | learn_rate locked after this step",
+    x = "learn_rate (log scale)",
+    y = "J-Index (CV mean)"
+  )
+```
+
+Stage 1 tuning identified **3,000 trees and a learning rate of 0.025167** as the highest-performing combination based on cross-validated J-Index. These values were therefore fixed for the next stage of XGBoost development, while the remaining model parameters were left available for tuning.
+
+```{r}
+#| label: xgboost-spec
+
+# Specify the XGBoost classification model using the learning rate
+# and number of trees selected during Stage 1 tuning.
+spec_xgb <- boost_tree(
+  tree_depth     = tune(),
+  learn_rate     = best_learn_rate,
+  loss_reduction = tune(),
+  min_n          = tune(),
+  sample_size    = tune(),
+  trees          = 3000
+) %>%
+  
+  # Use the XGBoost engine.
+  set_engine("xgboost") %>%
+  
+  # Specify classification because the outcome indicates
+  # whether an employee left or stayed.
+  set_mode("classification")
+```
+
+## Support Vector Machine (SVM)
+
+A support vector machine (SVM) was included as an additional classification model for predicting employee turnover. SVM attempts to distinguish employees who left from those who stayed based on patterns across the predictor variables. A radial kernel was used so the model could account for more complex relationships in the data, while its key parameters were tuned to identify the best-performing model.
+
+```{r}
+#| label: svm-spec
+
+# Specify a support vector machine classification model
+# using a radial basis function kernel.
+spec_svm <- svm_rbf(
+  
+  # Tune the penalty applied to classification errors.
+  cost = tune(),
+  
+  # Tune the flexibility of the radial kernel used to
+  # identify more complex patterns between the outcome classes.
+  rbf_sigma = tune()
+) %>%
+  
+  # Use the kernlab engine for support vector machine modeling.
+  set_engine("kernlab") %>%
+  
+  # Specify classification because the outcome indicates
+  # whether an employee left or stayed.
+  set_mode("classification")
+```
+
+## Workflow Construction
+
+After specifying the four candidate models, each model was paired with the preprocessing recipes created earlier to form a comprehensive set of workflows representing different combinations of modeling approaches and class imbalance strategies. Because class weighting requires a separate weighted training set and is not supported by all model engines, an additional set of weighted workflows was created for the compatible models. Together, these workflows were tuned and compared using a consistent cross-validation framework.
+
+```{r}
+#| label: workflow-set
+
+# Store the five sampling-based preprocessing recipes
+recipe_list <- list(
+  NoSampling = rec_none,
+  Upsample   = rec_upsample,
+  Downsample = rec_downsample,
+  SMOTE      = rec_smote,
+  ADASYN     = rec_adasyn
+)
+
+# Store all four candidate model specifications
+model_list <- list(
+  LogisticReg  = spec_lr,
+  RandomForest = spec_rf,
+  XGBoost      = spec_xgb,
+  SVM          = spec_svm
+)
+
+# Create workflows for the sampling-based recipes
+# 5 recipes × 4 models = 20 workflows
+wf_set <- workflow_set(
+  preproc = recipe_list,
+  models  = model_list,
+  cross   = TRUE
+)
+
+# Class weighting is not supported by all engines.
+# Create a separate model list excluding SVM.
+model_list_weights <- list(
+  LogisticReg  = spec_lr,
+  RandomForest = spec_rf,
+  XGBoost      = spec_xgb
+)
+
+# Create workflows for the weighted recipe
+# 1 recipe × 3 compatible models = 3 workflows
+wf_set_weights <- workflow_set(
+  preproc = list(
+    Weights = rec_weights
+  ),
+  models = model_list_weights,
+  cross = TRUE
+)
+
+# Combine all workflows into a single workflow set
+wf_set_all <- bind_rows(
+  wf_set,
+  wf_set_weights
+)
+
+# Display all candidate workflows
+wf_set_all
+```
+
+In total, 23 candidate workflows were created by pairing each of the five preprocessing strategies with the four candidate models.
+
+# Model Evaluation
+
+Several evaluation metrics were used to assess predictive performance across the candidate models. Because employee turnover represents the minority class, reliance on overall accuracy alone would provide an incomplete assessment of model quality. Metrics emphasizing the correct identification of employees who left the organization were therefore prioritized.
+
+The primary metrics used for model selection and evaluation included:
+
+- **J-index (Youden's J):** Primary model selection metric because it balances sensitivity and specificity while discouraging models that predict only the majority class.
+
+-  **PR-AUC:** Evaluates precision-recall performance and is particularly informative for imbalanced classification problems.
+
+-  **ROC-AUC:** Measures the model's overall ability to distinguish employees who left from those who stayed.
+
+-  **Sensitivity:** Indicates the proportion of employees who left that were correctly identified by the model.
+
+Additional metrics, including specificity, accuracy, F1 score, Cohen's Kappa, and Matthews Correlation Coefficient (MCC), were retained to provide a more comprehensive assessment of model performance.
+
+```{r}
+#| label: metric-set
+
+# Define the evaluation metrics used during model tuning
+# and final model comparison.
+class_metrics <- metric_set(
+  j_index,
+  pr_auc,
+  roc_auc,
+  sensitivity,
+  specificity,
+  accuracy,
+  f_meas,
+  kap,
+  mcc
+)
+```
+
+```{r}
+#| label: hard-metric-set
+
+# Define metrics requiring hard class predictions rather
+# than predicted probabilities.
+hard_metrics <- metric_set(
+  j_index,
+  sensitivity,
+  specificity,
+  accuracy,
+  f_meas,
+  kap,
+  mcc
+)
+```
+
+To efficiently compare the candidate workflows, ANOVA racing was used to tune model hyperparameters while eliminating poorly performing configurations as evidence accumulated across resamples. Because the class-weighted workflows require a separate weighted training set and cross-validation object, the sampling-based and weighted workflows were tuned independently before combining the results for subsequent evaluation.
+
+```{r}
+#| label: race-tune
+#| cache: true
+
+# install.packages("finetune")
+library(finetune)
+
+# Record the start time for timing the tuning process.
+start_time <- Sys.time()
+
+# Register all available CPU cores except one for parallel processing.
+doParallel::registerDoParallel(
+  cores = max(1, parallel::detectCores() - 1)
+)
+
+# Define the ANOVA racing control settings.
+# Poor-performing hyperparameter combinations are eliminated
+# early to reduce computation time.
+race_ctrl <- control_race(
+  save_pred      = TRUE,
+  parallel_over  = "everything",
+  save_workflow  = TRUE,
+  verbose_elim   = FALSE,
+  burn_in        = 3
+)
+
+# Tune the 20 sampling-based workflows using the standard
+# cross-validation folds created from the original training data.
+race_results_main <- wf_set %>%
+  workflow_map(
+    fn        = "tune_race_anova",
+    seed      = 42,
+    resamples = cv_folds,
+    grid      = 25,      
+    metrics   = class_metrics,
+    control   = race_ctrl,
+    verbose   = FALSE
+  )
+
+# Tune the three class-weighted workflows separately.
+# These workflows require the weighted training data and
+# weighted cross-validation folds that contain the case_wt column.
+race_results_weights <- wf_set_weights %>%
+  workflow_map(
+    fn        = "tune_race_anova",
+    seed      = 42,
+    resamples = cv_folds_w,
+    grid      = 25,      
+    metrics   = class_metrics,
+    control   = race_ctrl,
+    verbose   = FALSE
+  )
+
+# Shut down the parallel backend after tuning completes.
+doParallel::stopImplicitCluster()
+
+# Combine the sampling-based and weighted workflow results
+# into a single object for downstream evaluation.
+race_results <- dplyr::bind_rows(
+  race_results_main,
+  race_results_weights
+)
+
+# Record the total tuning time.
+end_time  <- Sys.time()
+race_time <- difftime(end_time, start_time, units = "mins")
+
+cat(
+  glue::glue(
+    "\nRace tuning completed in {round(race_time, 1)} minutes.\n"
+  )
+)
+```
+
+```{r}
+#| label: failed-workflows-note
+
+# Check whether each workflow produced at least one valid set of metrics.
+has_valid_metrics <- function(result) {
+  if (inherits(result, "try-error")) {
+    return(FALSE)
+  }
+
+  tryCatch(
+    {
+      nrow(tune::collect_metrics(result)) > 0
+    },
+    error = function(e) FALSE
+  )
+}
+
+# Retain workflows that produced valid tuning results.
+race_results_clean <- race_results %>%
+  filter(
+    map_lgl(result, has_valid_metrics)
+  )
+
+# Report how many workflows succeeded and failed.
+cat(
+  glue::glue(
+    "Workflows retained : {nrow(race_results_clean)}\n",
+    "Workflows removed  : ",
+    "{nrow(race_results) - nrow(race_results_clean)}\n"
+  )
+)
+
+# Display the IDs of any workflows that produced no valid results.
+race_results %>%
+  filter(
+    !map_lgl(result, has_valid_metrics)
+  ) %>%
+  pull(wflow_id)
+```
+
+ANOVA racing successfully evaluated all 23 candidate workflows while efficiently eliminating weaker hyperparameter combinations throughout the tuning process. The resulting cross-validated performance estimates provided the basis for comparing workflows across multiple evaluation metrics before selecting the strongest candidates for final model evaluation.
+
+## Model Performance Visualization
+
+Following hyperparameter tuning, the candidate workflows were compared using several visualizations to identify the strongest-performing combinations of preprocessing strategy and classification model. Rankings based on J-Index and PR-AUC provided an initial comparison of predictive performance, while additional visualizations examined performance across both model families and class imbalance strategies before selecting workflows for more detailed evaluation.
+
+### Workflow Rankings
+
+The candidate workflows were first compared using ranked visualizations of their cross-validated performance. Because no single evaluation metric fully captures model quality, multiple metrics were examined to assess how consistently each workflow identified employees who left the organization. J-Index served as the primary model selection metric because it balances sensitivity and specificity while discouraging degenerate models that predict only the majority class. Precision-Recall Area Under the Curve (PR-AUC) was also examined because it provides a more informative assessment of predictive performance for the minority class.
+
+#### Workflow Rankings by J-Index
+
+The first visualization ranks all 23 candidate workflows according to their cross-validated J-Index. Higher values indicate stronger overall discrimination between employees who left and those who stayed.
+
+```{r}
+#| label: workflow-ranking-jindex
+
+# Rank all workflows using the cross-validated J-Index.
+autoplot(
+  race_results,
+  rank_metric = "j_index",
+  metric = "j_index",
+  select_best = TRUE
+) +
+  labs(
+    title = "Workflow Rankings by J-Index",
+    subtitle = "Cross-validated performance across all candidate workflows"
+  )
+```
+
+The workflow rankings indicate that the tree-based models consistently produced the strongest predictive performance. XGBoost and Random Forest occupied the highest-ranked positions with nearly identical cross-validated J-Index values, suggesting that both modeling approaches effectively distinguished employees who left from those who stayed. Support Vector Machine models formed a second tier of performance, while penalized logistic regression produced substantially lower J-Index values across most preprocessing strategies. Because several tree-based workflows achieved very similar performance, additional evaluation metrics were examined before selecting a final model.
+
+#### Workflow Rankings by PR-AUC
+
+Although J-Index served as the primary metric for model selection, Precision-Recall Area Under the Curve (PR-AUC) was also evaluated because it provides a more informative assessment of classifier performance when predicting the minority class. Unlike ROC-AUC, PR-AUC emphasizes the tradeoff between precision and recall for employees who left the organization and is less influenced by the large number of employees who remained.
+
+```{r}
+#| label: workflow-ranking-prauc
+
+# Rank all workflows using cross-validated PR-AUC.
+autoplot(
+  race_results,
+  rank_metric = "pr_auc",
+  metric = "pr_auc",
+  select_best = TRUE
+) +
+  labs(
+    title = "Workflow Rankings by PR-AUC",
+    subtitle = "Cross-validated precision-recall performance across all candidate workflows"
+  )
+```
+
+The PR-AUC rankings closely mirrored the J-Index results, providing additional confidence in the consistency of workflow performance across multiple evaluation metrics. Random Forest and XGBoost workflows again occupied the highest-ranked positions, demonstrating strong performance in identifying employees who left the organization while maintaining high precision. Support Vector Machine workflows formed a second tier of performance, whereas penalized logistic regression consistently ranked lowest. The agreement between the J-Index and PR-AUC rankings suggests that the strongest workflows generalized well across metrics designed for imbalanced classification, increasing confidence in their selection for subsequent evaluation.
+
+### Recipe and Model Performance Comparison
+
+To examine whether performance differences were associated primarily with the model family, the class imbalance strategy, or a combination of both, the best-performing hyperparameter configuration for each workflow was compared using PR-AUC and J-Index. Error bars represent one standard error around the cross-validated mean, allowing the relative stability and overlap of workflow performance to be assessed.
+
+#### J-Index Comparison
+
+```{r}
+#| label: jindex-plot
+#| fig-height: 6
+
+# Compare the best J-Index result for each workflow.
+collect_metrics(race_results) %>%
+  
+  # Separate the workflow identifier into its preprocessing
+  # strategy and model family for plotting.
+  separate(
+    wflow_id,
+    into = c("Recipe", "Model"),
+    sep = "_",
+    extra = "merge",
+    remove = FALSE
+  ) %>%
+  
+  # Retain J-Index results only.
+  filter(.metric == "j_index") %>%
+  
+  # Keep the strongest hyperparameter configuration
+  # within each workflow.
+  group_by(wflow_id) %>%
+  filter(mean == max(mean)) %>%
+  distinct(wflow_id, .keep_all = TRUE) %>%
+  ungroup() %>%
+  
+  # Order workflows by their cross-validated mean J-Index.
+  mutate(
+    wflow_id = fct_reorder(wflow_id, mean)
+  ) %>%
+  
+  # Plot the mean performance and one-standard-error interval.
+  ggplot(
+    aes(
+      x = mean,
+      y = wflow_id,
+      color = Model,
+      shape = Recipe
+    )
+  ) +
+  geom_point(size = 4) +
+  geom_errorbarh(
+    aes(
+      xmin = mean - std_err,
+      xmax = mean + std_err
+    ),
+    height = 0.3
+  ) +
+  theme_minimal() +
+  scale_color_viridis_d() +
+  labs(
+    title = "Best J-Index per Workflow with ±1 SE",
+    x = "J-Index (Cross-Validated Mean)",
+    y = NULL
+  )
+```
+
+Comparing the best hyperparameter configuration from each workflow provided a clearer view of how preprocessing strategy and model family jointly influenced predictive performance. XGBoost and Random Forest consistently achieved the highest cross-validated J-Index values across multiple class imbalance strategies, with substantial overlap in their one-standard-error intervals, suggesting that differences among the strongest tree-based workflows were relatively small. The class-weighted XGBoost workflow achieved the highest overall J-Index, indicating that incorporating observation weights was competitive with, and in this case slightly outperformed, the sampling-based approaches. Support Vector Machine workflows formed a second tier of performance, while penalized logistic regression remained the weakest-performing model family regardless of preprocessing strategy.
+
+#### PR-AUC Comparison
+
+```{r}
+#| label: perf-comparison
+#| fig-height: 6
+
+# Compare the best PR-AUC result for each workflow.
+collect_metrics(race_results) %>%
+  
+  # Separate the workflow identifier into its preprocessing
+  # strategy and model family for plotting.
+  separate(
+    wflow_id,
+    into = c("Recipe", "Model"),
+    sep = "_",
+    extra = "merge",
+    remove = FALSE
+  ) %>%
+  
+  # Retain PR-AUC results only.
+  filter(.metric == "pr_auc") %>%
+  
+  # Keep the strongest hyperparameter configuration
+  # within each workflow.
+  group_by(wflow_id) %>%
+  filter(mean == max(mean)) %>%
+  distinct(wflow_id, .keep_all = TRUE) %>%
+  ungroup() %>%
+  
+  # Order workflows by their cross-validated mean PR-AUC.
+  mutate(
+    wflow_id = fct_reorder(wflow_id, mean)
+  ) %>%
+  
+  # Plot the mean performance and one-standard-error interval.
+  ggplot(
+    aes(
+      x = mean,
+      y = wflow_id,
+      color = Model,
+      shape = Recipe
+    )
+  ) +
+  geom_point(size = 4) +
+  geom_errorbarh(
+    aes(
+      xmin = mean - std_err,
+      xmax = mean + std_err
+    ),
+    height = 0.3
+  ) +
+  theme_minimal() +
+  scale_color_viridis_d() +
+  labs(
+    title = "Best PR-AUC per Workflow with ±1 SE",
+    x = "PR-AUC (Cross-Validated Mean)",
+    y = NULL
+  )
+```
+
+The PR-AUC comparison revealed a slightly different ranking among the highest-performing workflows than was observed for J-Index. Random Forest workflows consistently achieved the highest PR-AUC values across nearly every class imbalance strategy, indicating excellent performance when identifying employees who left the organization while minimizing false positive predictions. XGBoost workflows remained highly competitive and formed the second-highest cluster of performance, whereas Support Vector Machine and penalized logistic regression again ranked substantially lower. Although the leading Random Forest and XGBoost workflows differed only modestly, the agreement across both evaluation metrics suggests that tree-based models consistently outperformed the alternative modeling approaches.
+
+## Cross-Validated Workflow Comparison
+
+Although the workflow rankings identified the strongest-performing candidate models, summary performance metrics alone do not fully describe classification behavior. The top-ranked workflows were therefore compared using cross-validated predictions from the training data to examine their confusion matrices, classification metrics, and tradeoffs between correctly identifying employees who left and generating false positive predictions. Because these evaluations rely exclusively on cross-validated training predictions, the held-out test set remains untouched until the final model evaluation stage, preserving an unbiased assessment of model performance.
+
+### Workflow Selection
+
+To facilitate a more detailed comparison, the highest-performing workflows were identified based on their cross-validated J-Index values. Because several candidate workflows demonstrated similar overall performance, the top five workflows were retained for further evaluation using cross-validated predictions. Restricting the analysis to the strongest-performing workflows simplified subsequent comparisons while ensuring that only competitive models advanced to the final evaluation stage.
+
+```{r}
+#| label: cm-workflow-selection
+
+# Leave this empty to automatically select the top workflows.
+manual_workflows <- c()
+
+# Number of top-performing workflows to examine.
+n_top <- 5
+
+# Automatically select the top five workflows by J-Index.
+# Only the strongest hyperparameter configuration from each
+# workflow is retained before ranking.
+top_by_jindex <- collect_metrics(race_results) %>%
+  filter(.metric == "j_index") %>%
+  group_by(wflow_id) %>%
+  filter(mean == max(mean)) %>%
+  distinct(wflow_id, .keep_all = TRUE) %>%
+  ungroup() %>%
+  arrange(desc(mean)) %>%
+  slice(1:n_top) %>%
+  pull(wflow_id)
+
+# Use manually entered workflows when provided;
+# otherwise use the automatically selected top five.
+workflows_to_examine <- if (length(manual_workflows) > 0) {
+  cat("Using manually specified workflows.\n")
+  manual_workflows
+} else {
+  cat(
+    glue::glue(
+      "Manual list empty — using top {n_top} by J-Index.\n"
+    )
+  )
+  top_by_jindex
+}
+
+# Display the workflows selected for deeper comparison.
+cat("\nWorkflows selected for confusion matrix comparison:\n")
+print(workflows_to_examine)
+```
+
+The five highest-performing workflows were all tree-based models, with XGBoost accounting for three workflows and Random Forest accounting for two. Multiple class imbalance strategies advanced to the next stage, including no sampling, class weighting, and upsampling. This suggests that while the choice of model family had the greatest influence on predictive performance, more than one preprocessing strategy produced competitive results. These five workflows were retained for cross-validated confusion matrix comparison before final model selection.
+
+Before comparing the selected workflows, the out-of-fold predictions generated during cross-validation were extracted for each workflow’s best hyperparameter configuration. These predictions provide a fair basis for comparing classification behavior without using the held-out test set.
+
+```{r}
+#| label: cv-preds-extract
+
+# Create a helper function that extracts the cross-validated predictions
+# from the best J-Index configuration for a selected workflow.
+get_best_cv_preds <- function(wf_results, wflow_id_str) {
+  
+  # Extract the tuning results for one workflow.
+  result <- wf_results %>%
+    extract_workflow_set_result(wflow_id_str)
+
+  # Identify the hyperparameter configuration with the best J-Index.
+  best_config <- result %>%
+    select_best(metric = "j_index") %>%
+    pull(.config)
+
+  # Retrieve the saved out-of-fold predictions for that configuration
+  # and add the workflow ID for later comparison.
+  result %>%
+    collect_predictions() %>%
+    filter(.config == best_config) %>%
+    mutate(wflow_id = wflow_id_str)
+}
+
+# Apply the helper function to each of the five selected workflows
+# and combine their predictions into one dataset.
+cv_preds_selected <- workflows_to_examine %>%
+  map(~ get_best_cv_preds(race_results, .x)) %>%
+  bind_rows()
+
+# Confirm the total number of predictions extracted.
+cat(
+  glue::glue(
+    "CV predictions extracted: {nrow(cv_preds_selected)} rows ",
+    "({length(workflows_to_examine)} workflows × ",
+    "~{round(nrow(cv_preds_selected) / length(workflows_to_examine))} ",
+    "training observations each)\n"
+  )
+)
+```
+
+Cross-validated predictions were successfully extracted for the five selected workflows, resulting in 34,990 out-of-fold predictions across the training data. Because each prediction was generated from the workflow's best-performing hyperparameter configuration on observations not used during model fitting, these predictions provide an unbiased basis for comparing classification behavior before evaluating the final model on the held-out test set.
+
+### Cross-Validated Confusion Matrices
+
+The selected workflows were next compared using cross-validated confusion matrices. These visualizations show how frequently each workflow correctly or incorrectly classified employees who left and stayed, providing a more concrete view of model behavior than summary metrics alone.
+
+```{r}
+#| label: cv-cm-heatmaps
+#| fig-height: 8
+
+# Build one confusion matrix heatmap for each selected workflow.
+cm_heatmap_plots <- workflows_to_examine %>%
+  set_names() %>%
+  map(function(wf_id) {
+    
+    cv_preds_selected %>%
+      filter(wflow_id == wf_id) %>%
+      
+      # Create the confusion matrix using the turnover outcome.
+      conf_mat(
+        truth = left,
+        estimate = .pred_class
+      ) %>%
+      
+      # Convert the confusion matrix into a heatmap.
+      autoplot(type = "heatmap") +
+      
+      # Apply a consistent fill scale across workflows
+      # so visual comparisons remain meaningful.
+      scale_fill_gradient(
+        low = "#f8f9fa",
+        high = "#e63946"
+      ) +
+      
+      labs(
+        title = wf_id,
+        subtitle = "Cross-validated out-of-fold predictions"
+      ) +
+      
+      theme_minimal(base_size = 10) +
+      theme(
+        legend.position = "none"
+      )
+  })
+
+# Arrange the five heatmaps in a multi-column layout.
+n_cols_grid <- if (
+  length(cm_heatmap_plots) <= 3
+) {
+  length(cm_heatmap_plots)
+} else {
+  3
+}
+
+gridExtra::grid.arrange(
+  grobs = cm_heatmap_plots,
+  ncol = n_cols_grid,
+  top = glue::glue(
+    "Cross-Validated Confusion Matrices — ",
+    "Top {length(workflows_to_examine)} Workflows\n",
+    "(Training-set out-of-fold predictions | ",
+    "Default 0.50 threshold)"
+  )
+)
+```
+
+The cross-validated confusion matrices demonstrated that all five selected workflows classified employees with a high degree of accuracy while exhibiting subtle differences in their prediction behavior. The XGBoost workflows correctly identified slightly more employees who left the organization but generated a greater number of false positive predictions. In contrast, the Random Forest workflows produced fewer false positives while missing slightly more employees who ultimately left. These differences illustrate the tradeoff between maximizing the detection of employee turnover and minimizing unnecessary retention interventions. Overall, the confusion matrices reinforced the strong performance of the tree-based workflows while highlighting that the preferred model may depend on organizational priorities regarding missed departures versus false alarms.
+
+```{r}
+#| label: cv-cm-metrics-table
+
+# Build a summary table for the selected workflows using their
+# cross-validated confusion matrices.
+cm_summary_tbl <- purrr::map_dfr(
+  workflows_to_examine,
+  function(wf_id) {
+
+    # Retain predictions for the current workflow.
+    workflow_predictions <- dplyr::filter(
+      cv_preds_selected,
+      wflow_id == wf_id
+    )
+
+    # Create the confusion matrix for the current workflow.
+    cm <- yardstick::conf_mat(
+      workflow_predictions,
+      truth = left,
+      estimate = .pred_class
+    )
+
+    # Extract the confusion matrix counts.
+    tp <- cm$table["left",   "left"]     # Predicted left, actually left
+    fn <- cm$table["stayed", "left"]     # Predicted stayed, actually left
+    fp <- cm$table["left",   "stayed"]   # Predicted left, actually stayed
+    tn <- cm$table["stayed", "stayed"]   # Predicted stayed, actually stayed
+
+    # Calculate summary metrics for the current workflow.
+    tibble::tibble(
+      Workflow = wf_id,
+      `TP — Correctly Flagged` = tp,
+      `FN — Missed Leavers` = fn,
+      `FP — False Alarms` = fp,
+      `TN — Correctly Cleared` = tn,
+      `Sensitivity (% leavers caught)` =
+        round(tp / (tp + fn), 3),
+      `Specificity (% stayers cleared)` =
+        round(tn / (tn + fp), 3),
+      `Precision (% flags are real)` =
+        round(tp / (tp + fp), 3),
+      `J-Index` =
+        round(
+          tp / (tp + fn) +
+            tn / (tn + fp) - 1,
+          3
+        )
+    )
+  }
+)
+
+# Display the confusion matrix summary in a PDF-compatible table.
+knitr::kable(
+  cm_summary_tbl,
+  caption = "Cross-Validated Confusion Matrix Summary — Selected Workflows",
+  digits = 3
+)
+```
+
+The confusion matrix summary demonstrated that all five selected workflows achieved excellent classification performance, with J-Index values ranging from 0.943 to 0.945. The two XGBoost workflows correctly identified 95.2% of employees who left the organization while maintaining a precision of 97.5%, indicating that nearly all employees flagged as potential leavers actually left. In contrast, the Random Forest workflows achieved the highest precision (99.4%) and specificity (99.8%), generating only nine false alarms but missing slightly more employees who ultimately left. The Upsample XGBoost workflow produced the highest sensitivity (95.3%), identifying two additional leavers compared with the other XGBoost workflows, but this improvement came at the cost of additional false positive predictions. Interestingly, the class-weighted XGBoost and Random Forest workflows produced identical confusion matrices and performance metrics to their corresponding no-sampling workflows, suggesting that incorporating case weights did not improve classification performance for this dataset. Overall, the results illustrate the tradeoff between maximizing the detection of employee turnover and minimizing unnecessary retention interventions.
+
+### Sensitivity and False Alarm Tradeoffs
+
+Although the selected workflows achieved similar overall performance, they differed slightly in how they balanced the detection of employees who left against the generation of false alarms. The following visualization compares sensitivity with the false alarm rate, where workflows positioned closer to the upper-left corner demonstrate stronger performance by identifying more leavers while incorrectly flagging fewer stayers.
+
+```{r}
+#| label: cv-cm-sensitivity-plot
+
+# Compare the selected workflows based on their ability to
+# correctly identify leavers while minimizing false alarms.
+cm_summary_tbl %>%
+  
+  # Reorder workflows by sensitivity and calculate the
+  # false alarm rate as one minus specificity.
+  mutate(
+    Workflow = forcats::fct_reorder(
+      Workflow,
+      `Sensitivity (% leavers caught)`
+    ),
+    false_alarm_rate =
+      1 - `Specificity (% stayers cleared)`
+  ) %>%
+  
+  # Plot sensitivity against the false alarm rate.
+  ggplot(
+    aes(
+      x = false_alarm_rate,
+      y = `Sensitivity (% leavers caught)`,
+      color = Workflow,
+      label = Workflow
+    )
+  ) +
+  
+  # Add one point for each selected workflow.
+  geom_point(size = 5) +
+  
+  # Label each workflow while reducing overlap.
+  ggrepel::geom_label_repel(
+    size = 3,
+    max.overlaps = 20
+  ) +
+  
+  # Add a reference line representing equal sensitivity
+  # and false alarm rates.
+  geom_abline(
+    intercept = 0,
+    slope = 1,
+    linetype = "dashed",
+    color = "grey50",
+    alpha = 0.5
+  ) +
+  
+  # Format both axes as percentages.
+  scale_x_continuous(
+    labels = scales::percent_format(),
+    limits = c(0, NA)
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format()
+  ) +
+  
+  # Apply a consistent color scale and clean theme.
+  scale_color_viridis_d() +
+  theme_minimal() +
+  theme(
+    legend.position = "none"
+  ) +
+  
+  # Add descriptive titles and axis labels.
+  labs(
+    title = "Sensitivity vs. False Alarm Rate",
+    subtitle = paste(
+      "Cross-validated comparison of the top five workflows;",
+      "upper-left indicates stronger performance"
+    ),
+    x = paste(
+      "False Alarm Rate (1 − Specificity):",
+      "% of stayers incorrectly flagged"
+    ),
+    y = paste(
+      "Sensitivity:",
+      "% of leavers correctly identified"
+    )
+  )
+```
+
+The sensitivity and false alarm comparison illustrates the tradeoff between maximizing the identification of employees who left and minimizing unnecessary retention interventions. The Random Forest workflows achieved the lowest false alarm rate while maintaining high sensitivity, making them well suited to situations where intervention resources are limited and false alarms should be minimized. Conversely, the Upsample XGBoost workflow achieved the highest sensitivity, correctly identifying slightly more employees who left but at the cost of a modest increase in false positive predictions. The NoSampling and Weights XGBoost workflows provided a balance between these extremes and produced nearly identical performance, suggesting that incorporating case weights did not materially improve classification performance for this dataset. Overall, the differences among the five workflows were relatively small, indicating that the final model selection should be guided not only by predictive performance but also by the organization's tolerance for missed leavers versus unnecessary intervention efforts.
+
+# Model Deployment
+
+The preceding analyses identified the strongest candidate workflows through repeated cross-validation while preserving the held-out test set for unbiased evaluation. In this final stage, the highest-performing workflow from each model family was finalized using its optimal hyperparameter configuration and evaluated on previously unseen employees. Comparing the best representative from each modeling approach provides a fair assessment of how well each model generalizes beyond the training data and supports selection of the most appropriate model for organizational deployment.
+
+## Finalizing the Best Models
+
+To provide a fair comparison across modeling approaches, the highest-performing workflow from each model family was identified using cross-validated J-Index. Each selected workflow was then finalized using its optimal hyperparameter values and prepared for evaluation on the held-out test set. Weighted workflows were paired with the corresponding weighted data objects to preserve the case-weight structure during final fitting.
+
+```{r}
+#| label: finalize-helper
+
+# Create a reusable function that selects the best hyperparameters,
+# finalizes the workflow, and evaluates it on the held-out test set.
+finalize_and_evaluate <- function(
+  wf_results,
+  wflow_id_str,
+  metric = "j_index",
+  split = data_split
+) {
+
+  # Identify the best hyperparameter configuration
+  # for the selected workflow.
+  best_params <- wf_results %>%
+    extract_workflow_set_result(wflow_id_str) %>%
+    select_best(metric = metric)
+
+  # Finalize the workflow using the selected parameters
+  # and evaluate it on the specified held-out test split.
+  last_fit_result <- wf_results %>%
+    extract_workflow(wflow_id_str) %>%
+    finalize_workflow(best_params) %>%
+    last_fit(
+      split = split,
+      metrics = class_metrics
+    )
+
+  # Return the workflow ID, selected parameters,
+  # and held-out test-set evaluation.
+  list(
+    wflow_id = wflow_id_str,
+    best_params = best_params,
+    last_fit = last_fit_result
+  )
+}
+
+# Return the appropriate training data for later model interpretation.
+# Weighted workflows require the version containing case_wt.
+get_train_data_for_model <- function(wflow_id_str) {
+  if (stringr::str_detect(wflow_id_str, "Weights")) {
+    training(data_split_w)
+  } else {
+    training(data_split)
+  }
+}
+
+# Return the appropriate complete dataset for later refitting.
+get_full_data_for_model <- function(wflow_id_str) {
+  if (stringr::str_detect(wflow_id_str, "Weights")) {
+    model_data_w
+  } else {
+    model_data
+  }
+}
+```
+
+```{r}
+#| label: best-per-family
+
+# Identify the strongest workflow within each model family.
+best_per_family <- collect_metrics(race_results) %>%
+  
+  # Use J-Index as the primary selection metric.
+  filter(.metric == "j_index") %>%
+  
+  # Retain the strongest hyperparameter configuration
+  # within each workflow.
+  group_by(wflow_id) %>%
+  filter(mean == max(mean)) %>%
+  distinct(wflow_id, .keep_all = TRUE) %>%
+  ungroup() %>%
+  
+  # Separate the workflow ID into recipe and model family.
+  separate(
+    wflow_id,
+    into = c("Recipe", "Model"),
+    sep = "_",
+    extra = "merge",
+    remove = FALSE
+  ) %>%
+  
+  # Select the highest-performing workflow in each model family.
+  group_by(Model) %>%
+  arrange(desc(mean), std_err, wflow_id) %>%
+  slice(1) %>%
+  ungroup() %>%
+  
+  # Retain the most relevant fields for reporting.
+  select(
+    wflow_id,
+    Model,
+    Recipe,
+    mean,
+    std_err
+  )
+
+# Display the best workflow from each model family.
+best_per_family %>%
+  knitr::kable(
+    caption = "Best Workflow per Model Family by J-Index",
+    digits = 4,
+    format = "html",
+    table.attr = 'style="color: white;"'
+  )
+```
+
+The strongest workflow within each model family was identified using cross-validated J-Index. SMOTE was selected for both penalized logistic regression and SVM, while the no-sampling recipe produced the strongest Random Forest and XGBoost workflows. Among the four model families, NoSampling XGBoost achieved the highest cross-validated J-Index, followed very closely by NoSampling Random Forest. These four workflows were therefore finalized and carried forward for evaluation on the held-out test set.
+
+```{r}
+#| label: finalize-models
+#| cache: true
+
+# Extract the workflow ID for the highest-performing
+# workflow within each model family.
+best_lr_id <- best_per_family %>%
+  dplyr::filter(stringr::str_detect(Model, "LogisticReg")) %>%
+  dplyr::pull(wflow_id)
+
+best_rf_id <- best_per_family %>%
+  dplyr::filter(stringr::str_detect(Model, "RandomForest")) %>%
+  dplyr::pull(wflow_id)
+
+best_xgb_id <- best_per_family %>%
+  dplyr::filter(stringr::str_detect(Model, "XGBoost")) %>%
+  dplyr::pull(wflow_id)
+
+best_svm_id <- best_per_family %>%
+  dplyr::filter(stringr::str_detect(Model, "SVM")) %>%
+  dplyr::pull(wflow_id)
+
+# Return the correct train/test split for each workflow.
+# Weighted workflows require data_split_w because it contains case_wt.
+get_split <- function(wflow_id_str) {
+  if (stringr::str_detect(wflow_id_str, "Weights")) {
+    data_split_w
+  } else {
+    data_split
+  }
+}
+
+# Finalize the strongest workflow from each model family
+# and evaluate it on the appropriate held-out test set.
+results_lr <- finalize_and_evaluate(
+  race_results,
+  best_lr_id,
+  split = get_split(best_lr_id)
+)
+
+results_rf <- finalize_and_evaluate(
+  race_results,
+  best_rf_id,
+  split = get_split(best_rf_id)
+)
+
+results_xgb <- finalize_and_evaluate(
+  race_results,
+  best_xgb_id,
+  split = get_split(best_xgb_id)
+)
+
+results_svm <- finalize_and_evaluate(
+  race_results,
+  best_svm_id,
+  split = get_split(best_svm_id)
+)
+```
+
+## Held-Out Test Performance
+
+After finalization, the strongest workflow from each model family was evaluated on the held-out test set. Because these observations were not used during model development, hyperparameter tuning, or workflow selection, the resulting performance estimates provide an unbiased assessment of how well each model generalizes to previously unseen employees.
+
+```{r}
+#| label: test-perf-table
+
+# Collect held-out test-set metrics for each finalized model.
+lr_metrics <- dplyr::mutate(
+  tune::collect_metrics(results_lr$last_fit),
+  model = "Logistic Regression"
+)
+
+rf_metrics <- dplyr::mutate(
+  tune::collect_metrics(results_rf$last_fit),
+  model = "Random Forest"
+)
+
+xgb_metrics <- dplyr::mutate(
+  tune::collect_metrics(results_xgb$last_fit),
+  model = "XGBoost"
+)
+
+svm_metrics <- dplyr::mutate(
+  tune::collect_metrics(results_svm$last_fit),
+  model = "SVM"
+)
+
+# Combine the model results into one table.
+test_metrics_long <- dplyr::bind_rows(
+  lr_metrics,
+  rf_metrics,
+  xgb_metrics,
+  svm_metrics
+)
+
+# Retain the model name, metric, and held-out estimate.
+test_metrics_long <- dplyr::select(
+  test_metrics_long,
+  model,
+  .metric,
+  .estimate
+)
+
+# Convert the long results into one row per model.
+test_metrics_tbl <- tidyr::pivot_wider(
+  test_metrics_long,
+  names_from = .metric,
+  values_from = .estimate
+)
+
+# Display the held-out test-set performance table
+# in a format compatible with PDF output.
+knitr::kable(
+  test_metrics_tbl,
+  caption = "Test-Set Performance Metrics by Model",
+  digits = 4
+)
+```
+
+The held-out test results demonstrated that the tree-based models generalized substantially better than the penalized logistic regression and SVM models. Random Forest achieved the strongest overall performance, producing the highest accuracy (95.8%), J-Index (0.986), ROC AUC (0.993), and specificity (99.9%) while maintaining excellent sensitivity (95.9%). XGBoost closely followed across all metrics but was consistently outperformed by Random Forest on the unseen test data. Although the penalized logistic regression model provided a useful baseline and demonstrated reasonable discrimination (ROC AUC = 0.844), its overall classification performance was considerably lower than that of the tree-based approaches. These results indicate that the Random Forest workflow provided the best balance between identifying employees who left and minimizing incorrect classifications, making it the strongest candidate for deployment.
+
+## Confusion Matrices
+
+### Training Confusion Matrices
+
+To assess potential overfitting, confusion matrices were generated for the finalized models using the training data. Similar classification patterns between the training and held-out test sets would indicate that the models generalized well rather than memorizing the training observations.
+
+```{r}
+#| label: training-confusion-matrices
+
+cat("── Logistic Regression — Training Confusion Matrix ─────────────────────\n")
+
+# Predict the training data using the finalized logistic regression workflow.
+results_lr$last_fit %>%
+  extract_workflow() %>%
+  augment(new_data = get_train_data_for_model(best_lr_id)) %>%
+
+  # Compare predicted versus observed outcomes.
+  conf_mat(truth = left, estimate = .pred_class) %>%
+  print()
+
+
+cat("\n── Random Forest — Training Confusion Matrix ───────────────────────────\n")
+
+# Predict the training data using the finalized Random Forest workflow.
+results_rf$last_fit %>%
+  extract_workflow() %>%
+  augment(new_data = get_train_data_for_model(best_rf_id)) %>%
+
+  # Compare predicted versus observed outcomes.
+  conf_mat(truth = left, estimate = .pred_class) %>%
+  print()
+
+
+cat("\n── XGBoost — Training Confusion Matrix ─────────────────────────────────\n")
+
+# Predict the training data using the finalized XGBoost workflow.
+results_xgb$last_fit %>%
+  extract_workflow() %>%
+  augment(new_data = get_train_data_for_model(best_xgb_id)) %>%
+
+  # Compare predicted versus observed outcomes.
+  conf_mat(truth = left, estimate = .pred_class) %>%
+  print()
+
+
+cat("\n── SVM — Training Confusion Matrix ─────────────────────────────────────\n")
+
+# Predict the training data using the finalized SVM workflow.
+results_svm$last_fit %>%
+  extract_workflow() %>%
+  augment(new_data = get_train_data_for_model(best_svm_id)) %>%
+
+  # Compare predicted versus observed outcomes.
+  conf_mat(truth = left, estimate = .pred_class) %>%
+  print()
+```
+
+### Test Confusion Matrices
+
+Confusion matrices were generated using the held-out test set to evaluate how each finalized model classified employees who left and stayed. Unlike the cross-validated confusion matrices presented during model development, these results represent performance on completely unseen employees and therefore provide the most realistic assessment of expected deployment performance.
+
+```{r}
+#| label: test-confusion-matrices
+
+cat("── Logistic Regression — Test Confusion Matrix ──────────────────────────\n")
+
+# Generate the held-out test confusion matrix.
+conf_mat_lr <- results_lr$last_fit %>%
+  collect_predictions() %>%
+  conf_mat(truth = left, estimate = .pred_class)
+
+print(conf_mat_lr)
+
+# Report sensitivity and specificity.
+cat(glue::glue(
+  "  Sensitivity : {round(conf_mat_lr$table[1,1] / sum(conf_mat_lr$table[,1]), 3)}\n",
+  "  Specificity : {round(conf_mat_lr$table[2,2] / sum(conf_mat_lr$table[,2]), 3)}\n\n"
+))
+
+
+cat("── Random Forest — Test Confusion Matrix ────────────────────────────────\n")
+
+# Generate the held-out test confusion matrix.
+conf_mat_rf <- results_rf$last_fit %>%
+  collect_predictions() %>%
+  conf_mat(truth = left, estimate = .pred_class)
+
+print(conf_mat_rf)
+
+# Report sensitivity and specificity.
+cat(glue::glue(
+  "  Sensitivity : {round(conf_mat_rf$table[1,1] / sum(conf_mat_rf$table[,1]), 3)}\n",
+  "  Specificity : {round(conf_mat_rf$table[2,2] / sum(conf_mat_rf$table[,2]), 3)}\n\n"
+))
+
+
+cat("── XGBoost — Test Confusion Matrix ──────────────────────────────────────\n")
+
+# Generate the held-out test confusion matrix.
+conf_mat_xgb <- results_xgb$last_fit %>%
+  collect_predictions() %>%
+  conf_mat(truth = left, estimate = .pred_class)
+
+print(conf_mat_xgb)
+
+# Report sensitivity and specificity.
+cat(glue::glue(
+  "  Sensitivity : {round(conf_mat_xgb$table[1,1] / sum(conf_mat_xgb$table[,1]), 3)}\n",
+  "  Specificity : {round(conf_mat_xgb$table[2,2] / sum(conf_mat_xgb$table[,2]), 3)}\n\n"
+))
+
+
+cat("── SVM — Test Confusion Matrix ──────────────────────────────────────────\n")
+
+# Generate the held-out test confusion matrix.
+conf_mat_svm <- results_svm$last_fit %>%
+  collect_predictions() %>%
+  conf_mat(truth = left, estimate = .pred_class)
+
+print(conf_mat_svm)
+
+# Report sensitivity and specificity.
+cat(glue::glue(
+  "  Sensitivity : {round(conf_mat_svm$table[1,1] / sum(conf_mat_svm$table[,1]), 3)}\n",
+  "  Specificity : {round(conf_mat_svm$table[2,2] / sum(conf_mat_svm$table[,2]), 3)}\n\n"
+))
+```
+
+The training and held-out test confusion matrices provide complementary evidence regarding model generalization. Logistic regression did not achieve perfect classification on the training data and remained the weakest performer on the test set, suggesting that the model was limited by its relatively simple linear decision boundary rather than overfitting the training observations. In contrast, Random Forest and XGBoost perfectly classified the training data, which initially raised concerns about potential overfitting. However, both models maintained excellent performance on previously unseen employees, indicating that their strong training performance generalized well beyond the training sample. Among the four finalized models, Random Forest demonstrated the strongest overall performance by correctly identifying 681 of the 710 employees who left while incorrectly flagging only three employees who stayed. XGBoost also performed exceptionally well but produced slightly more false positives and false negatives than Random Forest. Although logistic regression remained a usable baseline model with a respectable ROC AUC (0.844) and sensitivity (85.9%), its substantially higher false-positive rate would result in considerably more unnecessary retention interventions. Taken together, the confusion matrices reinforce the held-out test metrics and support Random Forest as the strongest candidate for deployment.
+
+Although the confusion matrices provide an intuitive summary of model performance, they reflect classification results at the default 0.50 probability threshold. Because employee turnover represents the minority class, this default threshold may not correspond to the optimal balance between identifying employees at risk of leaving and minimizing unnecessary interventions. The next section therefore evaluates model performance across the full range of possible classification thresholds using ROC and Precision–Recall curves.
+
+## ROC and Precision–Recall Curves
+
+Although confusion matrices summarize model performance at the default 0.50 classification threshold, they do not capture how performance changes as the classification threshold varies. Receiver Operating Characteristic (ROC) and Precision–Recall (PR) curves were therefore used to evaluate each finalized model across the full range of possible decision thresholds. ROC curves summarize a model's overall ability to distinguish between employees who left and those who stayed, whereas PR curves provide additional insight into performance on the minority class, making them particularly valuable for employee turnover prediction.
+
+```{r}
+#| label: roc-curves
+#| fig-height: 5
+
+# Combine held-out predictions from each finalized model.
+roc_data <- bind_rows(
+  collect_predictions(results_lr$last_fit)  %>%
+    mutate(model = "Logistic Regression"),
+
+  collect_predictions(results_rf$last_fit)  %>%
+    mutate(model = "Random Forest"),
+
+  collect_predictions(results_xgb$last_fit) %>%
+    mutate(model = "XGBoost"),
+
+  collect_predictions(results_svm$last_fit) %>%
+    mutate(model = "SVM")
+)
+
+# Compare discrimination across all classification thresholds.
+roc_data %>%
+  group_by(model) %>%
+  roc_curve(
+    truth = left,
+    .pred_left
+  ) %>%
+  ggplot(
+    aes(
+      x = 1 - specificity,
+      y = sensitivity,
+      color = model
+    )
+  ) +
+  geom_line(linewidth = 1.2) +
+  geom_abline(
+    linetype = 2,
+    color = "grey50"
+  ) +
+  scale_color_viridis_d() +
+  theme_minimal() +
+  coord_equal() +
+  labs(
+    title = "ROC Curves for Final Models",
+    x = "False Positive Rate (1 − Specificity)",
+    y = "True Positive Rate (Sensitivity)",
+    color = "Model"
+  )
+```
+
+```{r}
+#| label: pr-curves
+#| fig-height: 5
+
+# Compare precision-recall performance across the finalized models.
+roc_data %>%
+  group_by(model) %>%
+  pr_curve(
+    truth = left,
+    .pred_left
+  ) %>%
+  ggplot(
+    aes(
+      x = recall,
+      y = precision,
+      color = model
+    )
+  ) +
+  geom_line(linewidth = 1.2) +
+  scale_color_viridis_d() +
+  theme_minimal() +
+  coord_equal() +
+  labs(
+    title = "Precision–Recall Curves for Final Models",
+    x = "Recall (Sensitivity)",
+    y = "Precision",
+    color = "Model"
+  )
+```
+
+The ROC and Precision–Recall curves reinforce the conclusions drawn from the held-out test metrics and confusion matrices. Random Forest and XGBoost demonstrated the strongest ability to distinguish between employees who left and those who stayed across the full range of classification thresholds, with Random Forest maintaining a slight but consistent advantage. The SVM also exhibited strong discrimination but remained below the tree-based approaches. Although the penalized logistic regression model performed substantially better than random classification, its ROC and Precision–Recall curves fell well below those of the machine learning models, indicating weaker overall discrimination. The Precision–Recall curves are particularly informative because employee turnover represents the minority class. Random Forest maintained the highest precision across nearly the entire range of recall values, indicating that it was more effective at identifying employees who were truly at risk of leaving while minimizing unnecessary interventions. Collectively, these threshold-independent evaluations further support Random Forest as the strongest candidate for organizational deployment.
+
+## Threshold Optimization
+
+The preceding analyses identified Random Forest as the strongest-performing model on the held-out test set. However, the default 0.50 probability threshold used to classify employees as likely to leave is arbitrary and may not maximize organizational value. The next analyses evaluate alternative classification thresholds to determine the balance between identifying employees at risk of turnover and minimizing unnecessary retention interventions.
+
+```{r}
+#| label: threshold-setup
+
+# Extract the optimal Random Forest hyperparameters identified
+# during cross-validated model tuning.
+rf_best_params <- race_results %>%
+  extract_workflow_set_result(best_rf_id) %>%
+  select_best(metric = "j_index")
+
+# Finalize the Random Forest workflow using its best parameters
+# and fit it to the complete training portion of the appropriate split.
+rf_train_fit <- race_results %>%
+  extract_workflow(best_rf_id) %>%
+  finalize_workflow(rf_best_params) %>%
+  fit(
+    training(
+      get_split(best_rf_id)
+    )
+  )
+
+# Generate predicted turnover probabilities for the held-out test set.
+rf_test_probs <- rf_train_fit %>%
+  predict(
+    new_data = testing(get_split(best_rf_id)),
+    type = "prob"
+  ) %>%
+
+  # Add the observed test-set outcome to the predictions.
+  bind_cols(
+    testing(get_split(best_rf_id)) %>%
+      select(left)
+  ) %>%
+
+  # Retain the outcome and the probabilities for both classes.
+  select(
+    left,
+    .pred_left,
+    .pred_stayed
+  )
+
+# Confirm the structure of the probability data.
+glimpse(rf_test_probs)
+```
+
+```{r}
+#| label: threshold-perf
+
+threshold_data <- rf_test_probs %>%
+  threshold_perf(
+    truth       = left,
+    estimate    = .pred_left,
+    thresholds  = seq(0.01, 0.99, by = 0.01),
+    event_level = "first"
+  )
+
+max_j_row <- threshold_data %>%
+  filter(.metric == "j_index") %>%
+  slice_max(.estimate, n = 1)
+
+max_j_threshold <- max_j_row$.threshold
+max_j_estimate  <- max_j_row$.estimate
+
+cat(glue::glue(
+  "Max J-Index: {round(max_j_estimate, 3)} at threshold = {round(max_j_threshold, 2)}\n"
+))
+```
+
+```{r}
+#| label: threshold-viz
+#| fig-height: 5
+
+# Plot sensitivity, specificity, and J-Index across
+# all evaluated probability thresholds.
+threshold_data %>%
+  filter(.metric != "distance") %>%
+  ggplot(
+    aes(
+      x = .threshold,
+      y = .estimate,
+      color = .metric
+    )
+  ) +
+  geom_line(linewidth = 1.2) +
+
+  # Mark the threshold that maximizes J-Index.
+  geom_vline(
+    xintercept = max_j_threshold,
+    linetype = "dashed",
+    alpha = 0.7
+  ) +
+
+  # Label the selected threshold and corresponding J-Index.
+  annotate(
+    "text",
+    x = max_j_threshold + 0.03,
+    y = 0.85,
+    label = glue::glue(
+      "Max J = {round(max_j_estimate, 3)}\n",
+      "Threshold = {round(max_j_threshold, 2)}"
+    ),
+    size = 3,
+    hjust = 0
+  ) +
+  scale_color_viridis_d() +
+  theme_minimal() +
+  labs(
+    title = "Random Forest Threshold Analysis",
+    subtitle = paste(
+      "Held-out test set;",
+      "dashed line marks the threshold maximizing J-Index"
+    ),
+    x = "Classification Threshold",
+    y = "Metric Estimate",
+    color = "Metric"
+  )
+```
+
+```{r}
+#| label: threshold-prob-dist
+#| fig-height: 4
+
+# Examine how Random Forest probabilities are distributed
+# for employees who left and stayed.
+rf_test_probs %>%
+  ggplot(
+    aes(
+      x = .pred_left,
+      fill = left,
+      color = left
+    )
+  ) +
+  geom_histogram(
+    bins = 40,
+    alpha = 0.6,
+    position = "identity"
+  ) +
+
+  # Mark the threshold selected by maximum J-Index.
+  geom_vline(
+    xintercept = max_j_threshold,
+    linetype = "dashed"
+  ) +
+  scale_fill_manual(
+    values = c(
+      "left" = "#e63946",
+      "stayed" = "#457b9d"
+    )
+  ) +
+  scale_color_manual(
+    values = c(
+      "left" = "#e63946",
+      "stayed" = "#457b9d"
+    )
+  ) +
+  theme_minimal() +
+  labs(
+    title = "Distribution of Predicted Turnover Probabilities",
+    subtitle = "Dashed line represents the J-Index-maximizing threshold",
+    x = "Predicted Probability of Leaving",
+    y = "Number of Employees",
+    fill = "Actual Outcome",
+    color = "Actual Outcome"
+  )
+```
+
+Threshold analysis indicated that the Random Forest model achieved its maximum J-Index of 0.960 at a classification threshold of approximately 0.43 to 0.44. This threshold is modestly lower than the default 0.50 cutoff, suggesting that employees should be classified as potential turnover risks once their predicted probability of leaving reaches approximately 43%. At this threshold, the model maintained a strong balance between identifying employees who left and correctly clearing employees who stayed. The predicted probability distribution also demonstrated substantial separation between the two outcome classes, with most employees who stayed receiving probabilities near zero and most employees who left receiving probabilities near one. Although the J-Index-maximizing threshold provides a statistically balanced cutoff, the final deployment threshold will also be evaluated using the assignment’s intervention costs and expected turnover savings.
+
+## Cost Analysis
+
+Predictive performance alone does not determine whether a turnover model provides organizational value. The following analysis applies the assignment’s financial assumptions to estimate the expected costs and savings associated with deploying the Random Forest model across alternative classification thresholds. Each employee identified as likely to leave would receive a \$5,000 intervention, with the intervention expected to prevent turnover 50% of the time. Avoiding one departure saves \$100,000 in turnover costs, resulting in \$95,000 in realized savings when an intervention succeeds. Because unnecessary interventions still consume organizational resources, false-positive costs were also incorporated into the threshold comparison.
+
+```{r}
+#| label: cost-setup
+
+# Count the employees who left and stayed in the held-out test set.
+test_counts <- rf_test_probs %>%
+  count(left, name = "n")
+
+n_left <- test_counts %>%
+  filter(left == "left") %>%
+  pull(n)
+
+n_stayed <- test_counts %>%
+  filter(left == "stayed") %>%
+  pull(n)
+
+# Store the financial assumptions provided in the assignment.
+turnover_cost <- 100000
+intervention_cost <- 5000
+intervention_success <- 0.50
+
+# Calculate the expected net value of intervening on one true leaver.
+# The intervention cost is incurred whether the intervention succeeds or fails.
+expected_value_per_tp <-
+  intervention_success * turnover_cost - intervention_cost
+
+cat(
+  glue::glue(
+    "Employees who left in test set : {n_left}\n",
+    "Employees who stayed in test set: {n_stayed}\n",
+    "Expected net value per true-positive intervention: ",
+    "${scales::comma(expected_value_per_tp)}\n"
+  )
+)
+```
+
+```{r}
+#| label: cost-function
+
+# Convert threshold-level sensitivity and specificity into
+# expected confusion matrix counts and financial outcomes.
+cost_tbl <- threshold_data %>%
+  filter(.metric %in% c("sensitivity", "specificity")) %>%
+  pivot_wider(
+    id_cols = .threshold,
+    names_from = .metric,
+    values_from = .estimate
+  ) %>%
+  mutate(
+    # Estimate confusion matrix counts at each threshold.
+    TP_count = sensitivity * n_left,
+    FN_count = (1 - sensitivity) * n_left,
+    FP_count = (1 - specificity) * n_stayed,
+    TN_count = specificity * n_stayed,
+
+    # Everyone predicted to leave receives the intervention.
+    Employees_Intervened = TP_count + FP_count,
+    Intervention_Cost =
+      Employees_Intervened * intervention_cost,
+
+    # Only half of true-positive interventions are expected
+    # to prevent an otherwise expected departure.
+    Expected_Retained =
+      TP_count * intervention_success,
+
+    Avoided_Turnover_Cost =
+      Expected_Retained * turnover_cost,
+
+    # Remaining turnover includes missed leavers and true-positive
+    # employees whose intervention is unsuccessful.
+    Expected_Remaining_Leavers =
+      FN_count + TP_count * (1 - intervention_success),
+
+    Expected_Turnover_Cost =
+      Expected_Remaining_Leavers * turnover_cost,
+
+    # Baseline assumes no model and no intervention program.
+    Baseline_Turnover_Cost =
+      n_left * turnover_cost,
+
+    # Total expected deployment cost and savings versus no program.
+    Total_Program_Cost =
+      Intervention_Cost + Expected_Turnover_Cost,
+
+    Net_Savings =
+      Baseline_Turnover_Cost - Total_Program_Cost,
+
+    # Retain J-Index for comparison with the statistical threshold.
+    j_index =
+      sensitivity + specificity - 1
+  )
+
+# Select the threshold producing the greatest expected net savings.
+# If financial results tie, prefer fewer false positives.
+max_savings_row <- cost_tbl %>%
+  arrange(
+    desc(Net_Savings),
+    FP_count,
+    desc(.threshold)
+  ) %>%
+  slice(1)
+
+max_savings_threshold <- max_savings_row$.threshold
+max_savings_value <- max_savings_row$Net_Savings
+
+cat(
+  glue::glue(
+    "Maximum expected net savings: ",
+    "${scales::comma(round(max_savings_value))}\n",
+    "Financially optimal threshold: ",
+    "{round(max_savings_threshold, 2)}\n",
+    "Expected employees retained: ",
+    "{round(max_savings_row$Expected_Retained, 1)}\n",
+    "Expected false positives: ",
+    "{round(max_savings_row$FP_count, 1)}\n",
+    "Employees receiving interventions: ",
+    "{round(max_savings_row$Employees_Intervened, 1)}\n"
+  )
+)
+```
+
+Incorporating the estimated costs of employee turnover and targeted retention interventions shifted the optimal Random Forest classification threshold from approximately **0.43**, which maximized J-Index, to **0.30**, which maximized expected financial return. At the 0.30 threshold, approximately **702 employees** would receive a retention intervention, including an estimated **685 employees** who would otherwise leave and only **17 employees** who would have remained without intervention. Assuming the intervention successfully prevents turnover 50% of the time, approximately **342.5 departures** would be avoided. This corresponds to approximately **\$34.25 million** in avoided turnover costs and **\$3.51 million** in intervention costs, yielding an estimated **net savings of \$30.74 million**. Although the threshold that maximizes financial return is lower than the statistically optimal threshold, the relatively small number of unnecessary interventions suggests that the organization can substantially increase expected savings while maintaining an acceptable false-positive rate.
+
+## Variable Importance
+
+To improve interpretability, the finalized models were refit using the full dataset before extracting importance estimates. This provides more stable estimates by using all available observations after model selection and test-set evaluation were complete. Variable importance identifies the predictors the models relied on most heavily when distinguishing employees who left from those who stayed; however, these results should be interpreted as predictive associations rather than causal effects.
+
+```{r}
+#| label: create-model-data
+
+# Full labeled dataset used only for post-evaluation refits,
+# variable importance, and whole-dataset scoring.
+model_data <- dplyr::bind_rows(
+  train_data,
+  test_data
+)
+```
+
+```{r}
+#| label: fit-full-data
+
+# Create a helper function that finalizes a selected workflow
+# and refits it using the complete available dataset.
+fit_full <- function(
+  wf_results,
+  wflow_id_str,
+  metric = "j_index"
+) {
+  
+  # Select the correct complete dataset.
+  # Weighted workflows require the version containing case_wt.
+  full_data <- get_full_data_for_model(wflow_id_str)
+
+  # Identify the best hyperparameter configuration
+  # for the selected workflow.
+  best_params <- wf_results %>%
+    extract_workflow_set_result(wflow_id_str) %>%
+    select_best(metric = metric)
+
+  # Finalize the workflow and fit it to the full dataset.
+  wf_results %>%
+    extract_workflow(wflow_id_str) %>%
+    finalize_workflow(best_params) %>%
+    fit(full_data)
+}
+```
+
+```{r}
+#| label: vip-logistic
+#| fig-height: 5
+
+# Refit the strongest logistic regression workflow
+# using the complete dataset.
+lr_full_fit <- fit_full(
+  race_results,
+  best_lr_id
+)
+
+# Extract coefficient-based variable importance.
+vip_lr <- lr_full_fit %>%
+  extract_fit_parsnip() %>%
+  vip::vi() %>%
+  
+  # Translate coefficient direction into turnover language.
+  mutate(
+    Sign = if_else(
+      Sign == "POS",
+      "Higher predicted probability of leaving",
+      "Lower predicted probability of leaving"
+    )
+  )
+
+# Display the 20 most influential logistic regression coefficients.
+vip_lr %>%
+  slice_max(
+    order_by = Importance,
+    n = 20
+  ) %>%
+  mutate(
+    Variable = forcats::fct_reorder(
+      Variable,
+      Importance
+    )
+  ) %>%
+  ggplot(
+    aes(
+      x = Importance,
+      y = Variable,
+      fill = Sign
+    )
+  ) +
+  geom_col() +
+  theme_minimal() +
+  labs(
+    title = "Logistic Regression — Top 20 Coefficients",
+    subtitle = "Direction indicates association with predicted turnover risk",
+    x = "Absolute Coefficient Importance",
+    y = NULL,
+    fill = "Direction"
+  )
+```
+
+```{r}
+#| label: vip-rf
+#| fig-height: 5
+
+# Refit the strongest Random Forest workflow
+# using the complete dataset.
+rf_full_fit <- fit_full(
+  race_results,
+  best_rf_id
+)
+
+# Display the 20 predictors that contributed most
+# to the finalized Random Forest model.
+vip::vip(
+  rf_full_fit$fit$fit$fit,
+  geom = "col",
+  num_features = 20,
+   aesthetics = list(fill = "#2a9d8f")
+) +
+  theme_minimal() +
+  labs(
+    title = "Random Forest — Top 20 Variable Importances",
+    subtitle = "Higher values indicate greater contribution to turnover predictions",
+    x = "Variable Importance",
+    y = NULL
+  )
+```
+
+Variable importance analyses from both the logistic regression and Random Forest models identified several consistent predictors of employee turnover. Across both modeling approaches, **employee satisfaction**, **time spent at the company**, and **workload-related variables** (e.g., number of projects and average monthly hours) emerged as the most influential predictors of turnover. The Random Forest model placed the greatest emphasis on satisfaction level, number of projects, average monthly hours, last evaluation, and organizational tenure, suggesting that employees' work experiences and workload characteristics contributed more strongly to turnover predictions than compensation level or department membership. The logistic regression model similarly highlighted satisfaction and tenure while also identifying salary level and workplace accidents as influential predictors through their estimated coefficients. Although the two modeling approaches quantify importance differently, the consistency across models increases confidence that these variables represent meaningful predictors of employee turnover. Importantly, variable importance reflects each predictor's contribution to accurate classification and should be interpreted as predictive associations rather than evidence of causal relationships.
+
+# Choosing the Final Model
+
+The Random Forest workflow consistently demonstrated the strongest predictive performance across cross-validation and held-out test evaluation. It achieved the highest overall discrimination, maintained excellent sensitivity and specificity, and generalized well to previously unseen employees. Subsequent threshold optimization and cost analysis indicated that the selected Random Forest model could be deployed at a threshold that balanced predictive performance with organizational costs while producing substantial expected savings. Collectively, these findings support selecting the Random Forest model for organizational deployment.
+
+## Save Final Model
+
+Following evaluation across multiple modeling approaches, the Random Forest model was selected as the final model for deployment. Saving the finalized model as an RDS object preserves the trained workflow, including preprocessing steps and tuned hyperparameters, allowing the model to be reloaded for future scoring without retraining
+
+```{r}
+#| label: save-final-model
+
+# Create a folder to store the finalized deployment model.
+model_dir <- "models"
+
+dir.create(
+  model_dir,
+  showWarnings = FALSE,
+  recursive = TRUE
+)
+
+# Save the finalized Random Forest model.
+saveRDS(
+  rf_full_fit,
+  file.path(model_dir, "random_forest_final_model.rds")
+)
+
+# Save the original data split for reproducibility.
+saveRDS(
+  data_split,
+  file.path(model_dir, "data_split.rds")
+)
+
+cat("Final model saved to:", model_dir)
+```
+
+## Reload Final Model
+
+To confirm reproducibility, the saved Random Forest model was reloaded from the RDS file and used to generate predictions on the held-out test set. Matching performance metrics and prediction outputs verify that the serialized model can be successfully restored and used for future scoring without retraining.
+
+```{r}
+#| label: reload-final-model
+
+# Specify the folder containing the saved model.
+model_dir <- "models"
+
+# Reload the finalized Random Forest model.
+rf_full_fit_reload <- readRDS(
+  file.path(model_dir, "random_forest_final_model.rds")
+)
+
+# Reload the original train/test split.
+data_split_reload <- readRDS(
+  file.path(model_dir, "data_split.rds")
+)
+
+# Retrieve the held-out test data.
+test_data_reload <- testing(data_split_reload)
+
+# Generate predicted probabilities and predicted classes.
+reload_preds <- test_data_reload %>%
+  bind_cols(
+    predict(
+      rf_full_fit_reload,
+      test_data_reload,
+      type = "prob"
+    )
+  ) %>%
+  bind_cols(
+    predict(
+      rf_full_fit_reload,
+      test_data_reload
+    )
+  )
+
+# Confirm that the reloaded model reproduces the original test-set performance.
+bind_rows(
+  hard_metrics(
+    reload_preds,
+    truth = left,
+    estimate = .pred_class
+  ),
+  roc_auc(
+    reload_preds,
+    truth = left,
+    .pred_left
+  ),
+  pr_auc(
+    reload_preds,
+    truth = left,
+    .pred_left
+  )
+) %>%
+  select(
+    .metric,
+    .estimate
+  ) %>%
+  arrange(.metric) %>%
+  knitr::kable(
+    caption = "Reloaded Random Forest Model — Test-Set Metrics",
+    digits = 4
+  )
+
+# Display the confusion matrix for the reloaded model.
+reload_preds %>%
+  conf_mat(
+    truth = left,
+    estimate = .pred_class
+  ) %>%
+  autoplot(type = "heatmap") +
+  scale_fill_gradient(
+    low = "#f8f9fa",
+    high = "#e63946"
+  ) +
+  labs(
+    title = "Reloaded Random Forest Model — Confusion Matrix"
+  )
+```
