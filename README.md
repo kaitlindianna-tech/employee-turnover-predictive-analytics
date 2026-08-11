@@ -178,8 +178,19 @@ With real organizational data, I would begin with significantly more organizatio
 
 Predictive analytics can identify where an organization should look. Understanding **why** a pattern exists requires context.
 
-## Portfolio Note
+## Portfolio Materials
 
-This repository contains a selected portfolio example from a larger graduate analytics project using a **simulated HR dataset**. It is intended to demonstrate the application of R, predictive modeling, model evaluation, analytical reasoning, and business translation within a People Analytics context.
+This repository contains a selected portfolio example from a larger graduate analytics project using an **assigned, simulated HR dataset**. It is intended to demonstrate the application of R, predictive modeling, model evaluation, analytical reasoning, and business translation within a People Analytics context.
 
-The underlying Quarto analysis is included to provide visibility into the technical workflow and code used to develop the final recommendations.
+### View the Project
+
+📄 [**Employee Turnover Analytics Portfolio Sample (PDF)**](employee-turnover-analytics-sample.pdf)
+
+💻 [**Full Quarto Analysis & R Code**](FinalProject.KJ.qmd)
+
+The **portfolio sample** provides a concise, business-facing overview of the project, analytical approach, key findings, and recommendations.
+
+The **Quarto analysis** provides the underlying technical workflow, including data preparation, feature selection, model development and comparison, validation, threshold optimization, and cost-benefit analysis.
+
+> **Note:** The dataset used for this project was an assigned, simulated HR dataset. Financial estimates reflect assumptions provided as part of the graduate assignment and do not represent actual organizational outcomes.
+
